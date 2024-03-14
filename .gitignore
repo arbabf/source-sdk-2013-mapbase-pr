@@ -54,3 +54,8 @@ config.cfg
 # shader files
 *.tmp
 
+*.vpc.sentinel
+*.vcxproj*
+*responserules*
+*Release_mod*
+

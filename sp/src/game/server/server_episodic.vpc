@@ -7,6 +7,7 @@
 $Macro SRCDIR		"..\.."
 $Macro GAMENAME 	"episodic" [!$SOURCESDK]
 $Macro GAMENAME 	"mod_episodic" [$SOURCESDK]
+$Macro TBDIR		"D:\Program Files (x86)\Steam\steamapps\sourcemods\test_build\bin"
 
 $Include "$SRCDIR\game\server\server_base.vpc"
 
@@ -17,6 +18,24 @@ $Configuration
 		$AdditionalIncludeDirectories	"$BASE;$SRCDIR\game\shared\hl2;$SRCDIR\game\shared\episodic;.\hl2;.\episodic"
 		$PreprocessorDefinitions		"$BASE;HL2_DLL;HL2_EPISODIC;USES_SAVERESTORE"
 	}
+	$PostBuildEvent [!$ANALYZE]	
+	{	
+		$CommandLine		"if not exist $QUOTE$TBDIR$QUOTE mkdir $QUOTE$TBDIR$QUOTE" "\n" 	
+		$CommandLine		"$BASE" "copy $QUOTE$(TargetDir)$(TargetFileName)$QUOTE $QUOTE$TBDIR\$(TargetFileName)$QUOTE" "\n" \	
+							"if ERRORLEVEL 1 goto BuildEventFailed" "\n" \	
+							"goto BuildEventOK" "\n" \	
+							":BuildEventFailed" "\n" \	
+							"echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***" "\n" \	
+							"del /q $QUOTE$(TargetDir)$(TargetFileName)$QUOTE" "\n" \	
+							"exit 1" "\n" \	
+							":BuildEventOK" "\n" 	
+		$CommandLine		"$BASE" "\n" \	
+							"call $SRCDIR\devtools\bin\vsign.bat -sign $OUTBINDIR\$(TargetFileName)" "\n" [$RETAIL && $PUBLISH]	
+		$CommandLine		"$BASE" "\n" \	
+							"call $SRCDIR\devtools\bin\vsign.bat -signvalve $OUTBINDIR\$(TargetFileName)" "\n" [!$RETAIL && !$PUBLISH && !$SOURCESDK]	
+		$Description		"Publishing to $OUTBINDIR"	
+		$ExcludedFromBuild	"No"	
+	}	
 }
 
 $Project "Server (Episodic)"
@@ -298,6 +317,11 @@ $Project "Server (Episodic)"
 				$File	"hl2\weapon_flaregun.cpp"
 				$File	"hl2\weapon_flaregun.h"
 			}
+		}
+		$Folder "Night Coast"
+		{
+			$File "nc\npc_hgrunt.cpp"
+			$File "nc\npc_hgrunt.h"
 		}
 	}
 }
