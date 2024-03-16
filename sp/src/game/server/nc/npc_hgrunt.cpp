@@ -22,29 +22,54 @@
 
 extern ConVar sk_healthkit;
 extern ConVar sk_healthvial;
-extern ConVar ai_HGrunt_debug_commander;
+extern ConVar ai_citizen_debug_commander;
+// todo: autosummon
+extern ConVar player_squad_autosummon_debug;
+extern ConVar player_squad_autosummon_player_tolerance;
+extern ConVar player_squad_autosummon_time_after_combat;
+extern ConVar player_squad_autosummon_time;
+extern ConVar player_squad_autosummon_move_tolerance;
 
+const int MAX_PLAYER_SQUAD = 8;
+
+ConVar sk_hgrunt_health( "sk_hgrunt_health", "60" );
 ConVar sk_hgrunt_medic_heal_amount( "sk_hgrunt_medic_heal_amount", "40" ); // how much to heal the target for
 ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "60" ); // heal once every this seconds
 ConVar sk_hgrunt_medic_heal_threshold( "sk_hgrunt_medic_heal_threshold", "40" ); // heal if target is less than this hp
 ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); // how much healing the hgrunt medic can have stored
 
 #define HGRUNT_HEAL_RANGE 512.0f
-#define DebuggingCommanderMode() (ai_HGrunt_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
+#define FRIENDLY_FIRE_TOLERANCE_LIMIT 3
+#define DebuggingCommanderMode() (ai_citizen_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
 #define COMMAND_POINT_CLASSNAME "info_target_command_point"
+// todo: clean up autosquad function
+#define ShouldAutosquad() (HasSpawnFlags(SF_HGRUNT_JOIN_WHEN_NEARBY))
 
 LINK_ENTITY_TO_CLASS( npc_hgrunt, CNPC_HGrunt );
 
 BEGIN_DATADESC( CNPC_HGrunt )
 DEFINE_KEYFIELD(m_iSquadRole, FIELD_INTEGER, "squadrole"),
+DEFINE_KEYFIELD( m_bNeverLeavePlayerSquad, FIELD_BOOLEAN, "neverleaveplayersquad" ),
 DEFINE_FIELD(m_flLastHealTime, FIELD_TIME),
+DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
+DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
 DEFINE_FIELD(m_hLastHealTarget, FIELD_EHANDLE),
 DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
+DEFINE_FIELD(m_iFriendlyFireTolerance, FIELD_INTEGER),
+DEFINE_FIELD( m_bWasInPlayerSquad, FIELD_BOOLEAN ),
+DEFINE_FIELD( m_vAutoSummonAnchor, FIELD_POSITION_VECTOR ),
+DEFINE_FIELD( m_iszOriginalSquad, FIELD_STRING ),
+DEFINE_EMBEDDED( m_AutoSummonTimer ),
 END_DATADESC()
+
+CSimpleSimTimer CNPC_HGrunt::gm_PlayerSquadEvaluateTimer;
 
 void CNPC_HGrunt::Spawn( void )
 {
 	BaseClass::Spawn();
+
+	m_iMaxHealth = sk_hgrunt_health.GetFloat();
+	m_iHealth = sk_hgrunt_health.GetFloat();
 
 	// tint hgrunt based on role and apply any role modifiers, for now
 	m_iHealCharge = -1;
@@ -60,18 +85,13 @@ void CNPC_HGrunt::Spawn( void )
 		break;
 	}
 	m_flLastHealTime = -1;
+	m_bWasInPlayerSquad = IsInPlayerSquad();
+	m_iszOriginalSquad = m_SquadName;
+	m_iFriendlyFireTolerance = 0;
+
+	NPCInit();
 
 	SetUse( &CNPC_HGrunt::CommanderUse );
-}
-
-void CNPC_HGrunt::SelectModel( void )
-{
-	// force model to be hgrunt
-	SetModelName( AllocPooledString( "models/Humans/group01/male_07.mdl" ) );
-	
-	//SetModelName( AllocPooledString("models/hgrunt/hgrunt.mdl") );
-
-	// if we were doing custom models for med + engi we would put them here.
 }
 
 // TODO: remove
@@ -809,7 +829,7 @@ void CNPC_HGrunt::Heal( CBaseCombatCharacter *pTarget )
 {
 	int hpTaken = pTarget->TakeHealth( sk_hgrunt_medic_heal_amount.GetInt(), DMG_GENERIC );
 	if (hpTaken == 0)
-		Warning( "Heal target was unable to be healed!" );
+		Warning( "Heal target was unable to be healed!\n" );
 	RemoveHealCharge( hpTaken );
 	// play anim and stuff
 }
@@ -1106,16 +1126,11 @@ void CNPC_HGrunt::MoveOrder( const Vector &vecDest, CAI_BaseNPC **Allies, int nu
 	if (!AI_IsSinglePlayer())
 		return;
 
-	if (hl2_episodic.GetBool() && m_iszDenyCommandConcept != NULL_STRING)
-	{
-		SpeakCommandResponse( STRING( m_iszDenyCommandConcept ) );
-		return;
-	}
-
 	CHL2_Player *pPlayer = (CHL2_Player *)UTIL_GetLocalPlayer();
 
-	m_AutoSummonTimer.Set( player_squad_autosummon_time.GetFloat() );
-	m_vAutoSummonAnchor = pPlayer->GetAbsOrigin();
+	// TODO: autosummon
+	/*m_AutoSummonTimer.Set( player_squad_autosummon_time.GetFloat() );
+	m_vAutoSummonAnchor = pPlayer->GetAbsOrigin();*/
 
 	if (m_StandoffBehavior.IsRunning())
 	{
@@ -1210,27 +1225,26 @@ void CNPC_HGrunt::CommanderUse( CBaseEntity *pActivator, CBaseEntity *pCaller, U
 		SetSpokeConcept( TLK_HELLO, NULL );
 
 		// todo: this
-		if (npc_HGrunt_auto_player_squad_allow_use.GetBool())
-		{
-			if (!ShouldAutosquad())
-				TogglePlayerSquadState();
-			else if (!IsInPlayerSquad() && npc_HGrunt_auto_player_squad_allow_use.GetBool())
-				AddToPlayerSquad();
-		}
-		else if (GetCurSchedule() && ConditionInterruptsCurSchedule( COND_IDLE_INTERRUPT ))
-		{
-			if (SpeakIfAllowed( TLK_QUESTION, NULL, true ))
-			{
-				if (random->RandomInt( 1, 4 ) < 4)
-				{
-					CBaseEntity *pRespondant = FindSpeechTarget( AIST_NPCS );
-					if (pRespondant)
-					{
-						g_EventQueue.AddEvent( pRespondant, "SpeakIdleResponse", (GetTimeSpeechComplete() - gpGlobals->curtime) + .2, this, this );
-					}
-				}
-			}
-		}
+		if (!ShouldAutosquad())
+			TogglePlayerSquadState();
+		else if (!IsInPlayerSquad())
+			AddToPlayerSquad();
+		else if (IsInPlayerSquad())
+			RemoveFromPlayerSquad();
+		//else if (GetCurSchedule() && ConditionInterruptsCurSchedule( COND_IDLE_INTERRUPT ))
+		//{
+		//	if (SpeakIfAllowed( TLK_QUESTION, NULL, true ))
+		//	{
+		//		if (random->RandomInt( 1, 4 ) < 4)
+		//		{
+		//			CBaseEntity *pRespondant = FindSpeechTarget( AIST_NPCS );
+		//			if (pRespondant)
+		//			{
+		//				g_EventQueue.AddEvent( pRespondant, "SpeakIdleResponse", (GetTimeSpeechComplete() - gpGlobals->curtime) + .2, this, this );
+		//			}
+		//		}
+		//	}
+		//}
 	}
 }
 
@@ -1313,6 +1327,7 @@ void CNPC_HGrunt::TogglePlayerSquadState()
 
 	if (!IsInPlayerSquad())
 	{
+		Warning( "Joining squad!\n" );
 		AddToPlayerSquad();
 
 		if (HaveCommandGoal())
@@ -1326,6 +1341,7 @@ void CNPC_HGrunt::TogglePlayerSquadState()
 	}
 	else
 	{
+		Warning( "Leaving squad!\n" );
 		SpeakCommandResponse( TLK_STOPFOLLOW );
 		RemoveFromPlayerSquad();
 	}
@@ -1334,7 +1350,7 @@ void CNPC_HGrunt::TogglePlayerSquadState()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-struct SquadCandidate_t
+struct SquadCandidateHGrunt_t
 {
 	CNPC_HGrunt *pHGrunt;
 	bool		  bIsInSquad;
@@ -1404,7 +1420,7 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 	if (pPlayer && ShouldAutosquad() && !(pPlayer->GetFlags() & FL_NOTARGET) && pPlayer->IsAlive())
 	{
 		CAI_BaseNPC **ppAIs = g_AI_Manager.AccessAIs();
-		CUtlVector<SquadCandidate_t> candidates;
+		CUtlVector<SquadCandidateHGrunt_t> candidates;
 		const Vector &vPlayerPos = pPlayer->GetAbsOrigin();
 		bool bFoundNewGuy = false;
 		int i;
@@ -1561,22 +1577,23 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 					}
 				}
 
-				if (pClosest)
-				{
-					if (!pClosest->SpokeConcept( TLK_JOINPLAYER ))
-					{
-						pClosest->SpeakCommandResponse( TLK_JOINPLAYER, CFmtStr( "numjoining:%d", nJoined ) );
-					}
-					else
-					{
-						pClosest->SpeakCommandResponse( TLK_STARTFOLLOW );
-					}
+				// todo: speaking
+				//if (pClosest)
+				//{
+				//	if (!pClosest->SpokeConcept( TLK_JOINPLAYER ))
+				//	{
+				//		pClosest->SpeakCommandResponse( TLK_JOINPLAYER, CFmtStr( "numjoining:%d", nJoined ) );
+				//	}
+				//	else
+				//	{
+				//		pClosest->SpeakCommandResponse( TLK_STARTFOLLOW );
+				//	}
 
-					for (i = 0; i < candidates.Count() && i < MAX_PLAYER_SQUAD; i++)
-					{
-						candidates[i].pHGrunt->SetSpokeConcept( TLK_JOINPLAYER, NULL );
-					}
-				}
+				//	for (i = 0; i < candidates.Count() && i < MAX_PLAYER_SQUAD; i++)
+				//	{
+				//		candidates[i].pHGrunt->SetSpokeConcept( TLK_JOINPLAYER, NULL );
+				//	}
+				//}
 			}
 		}
 	}
@@ -1584,7 +1601,7 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-int CNPC_HGrunt::PlayerSquadCandidateSortFunc( const SquadCandidate_t *pLeft, const SquadCandidate_t *pRight )
+int CNPC_HGrunt::PlayerSquadCandidateSortFunc( const SquadCandidateHGrunt_t *pLeft, const SquadCandidateHGrunt_t *pRight )
 {
 	// "Bigger" means less approprate 
 	CNPC_HGrunt *pLeftHGrunt = pLeft->pHGrunt;
@@ -1595,6 +1612,13 @@ int CNPC_HGrunt::PlayerSquadCandidateSortFunc( const SquadCandidate_t *pLeft, co
 		return -1;
 
 	if (!pLeftHGrunt->IsMedic() && pRightHGrunt->IsMedic())
+		return 1;
+
+	// engineers are better than regular hgrunts
+	if (pLeftHGrunt->IsEngineer() && !pRightHGrunt->IsEngineer())
+		return -1;
+
+	if (!pLeftHGrunt->IsEngineer() && pRightHGrunt->IsEngineer())
 		return 1;
 
 	CBaseCombatWeapon *pLeftWeapon = pLeftHGrunt->GetActiveWeapon();
@@ -1760,14 +1784,14 @@ bool CNPC_HGrunt::IsFollowingCommandPoint()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-struct SquadMemberInfo_t
+struct HGruntSquadMemberInfo_t
 {
 	CNPC_HGrunt *	pMember;
 	bool			bSeesPlayer;
 	float			distSq;
 };
 
-int __cdecl SquadSortFunc( const SquadMemberInfo_t *pLeft, const SquadMemberInfo_t *pRight )
+int __cdecl HGruntSquadSortFunc( const HGruntSquadMemberInfo_t *pLeft, const HGruntSquadMemberInfo_t *pRight )
 {
 	if (pLeft->bSeesPlayer && !pRight->bSeesPlayer)
 	{
@@ -1797,7 +1821,7 @@ CAI_BaseNPC *CNPC_HGrunt::GetSquadCommandRepresentative()
 			lastTime = gpGlobals->curtime;
 			hCurrent = NULL;
 
-			CUtlVectorFixed<SquadMemberInfo_t, MAX_SQUAD_MEMBERS> candidates;
+			CUtlVectorFixed<HGruntSquadMemberInfo_t, MAX_SQUAD_MEMBERS> candidates;
 			CBasePlayer *pPlayer = UTIL_GetLocalPlayer();
 
 			if (pPlayer)
@@ -1816,7 +1840,7 @@ CAI_BaseNPC *CNPC_HGrunt::GetSquadCommandRepresentative()
 
 				if (candidates.Count() > 0)
 				{
-					candidates.Sort( SquadSortFunc );
+					candidates.Sort( HGruntSquadSortFunc );
 					hCurrent = candidates[0].pMember;
 				}
 			}
@@ -1850,6 +1874,74 @@ void CNPC_HGrunt::SetSquad( CAI_Squad *pSquad )
 		//m_OnLeftPlayerSquad.FireOutput( this, this );
 	}
 }
+
+bool CNPC_HGrunt::PassesDamageFilter( const CTakeDamageInfo &info )
+{
+	// take all damage from the player
+	if (info.GetAttacker() == AI_GetSinglePlayer())
+		return true;
+
+	return BaseClass::PassesDamageFilter( info );
+}
+
+int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
+{
+	// handle how the hgrunt handles damage from the player
+	if (info.GetAttacker() == AI_GetSinglePlayer())
+	{
+		bool bHatePlayer = false;
+		if (info.GetDamageType() == DMG_BLAST)
+		{
+			// first, handle nearby explosions. if we take too much damage from the explosion assume it's intentional friendly fire
+			if (info.GetDamage() >= GetMaxHealth() * 0.5f)
+				bHatePlayer = true;
+		}
+		else
+		{
+			if (GetState() == NPC_STATE_IDLE || GetState() == NPC_STATE_ALERT)
+			{
+				// if the player attacks me here, assume that they're intentionally killing me, and defend myself
+				bHatePlayer = true;
+			}
+			else if (GetState() == NPC_STATE_COMBAT)
+			{
+				// otherwise, assume it was probably unintentional friendly fire.
+				m_iFriendlyFireTolerance++;
+				if (m_iFriendlyFireTolerance >= FRIENDLY_FIRE_TOLERANCE_LIMIT)
+				{
+					// definitely not unintentional friendly fire.
+					bHatePlayer = true;
+				}
+			}
+		}
+		
+
+		if (bHatePlayer)
+		{
+			AddEntityRelationship( AI_GetSinglePlayer(), D_HT, 1 );
+			AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
+			RemoveFromPlayerSquad();
+			Warning( "HGrunt hates the player!\n" );
+			// get the rest of the squad to hate the player
+			/*AISquadIter_t iter;
+			for (CAI_BaseNPC *pAllyNpc = m_pSquad->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = m_pSquad->GetNextMember( &iter ))
+			{
+				CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
+				if (pHGrunt)
+				{
+					pHGrunt->AddEntityRelationship( AI_GetSinglePlayer(), D_HT, 1 );
+					pHGrunt->RemoveFromPlayerSquad();
+					pHGrunt->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
+					Warning( "HGrunt hates the player!\n" );
+				}
+				
+			}*/
+		}
+	}
+
+	return BaseClass::OnTakeDamage_Alive( info );
+}
+
 // schedules
 AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 DECLARE_TASK(TASK_HGRUNT_MEDIC_HEAL)

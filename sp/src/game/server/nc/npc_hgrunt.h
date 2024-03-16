@@ -7,6 +7,8 @@
 
 #include "npc_playercompanion.h"
 
+struct SquadCandidateHGrunt_t;
+
 enum HGruntType_t
 {
 	HGRUNT_GENERIC,
@@ -26,10 +28,10 @@ class CNPC_HGrunt : public CNPC_PlayerCompanion
 	DECLARE_DATADESC();
 
 public:
-	virtual void	SelectModel();
 	virtual void	Spawn();
 	bool			IsMedic() { return m_iSquadRole == HGRUNT_MEDIC; }
 	bool			IsEngineer() { return m_iSquadRole == HGRUNT_ENGINEER; }
+	Class_T 		Classify() { return CLASS_PLAYER_ALLY; }
 
 	//---------------------------------
 	// Healing-related functions
@@ -39,6 +41,7 @@ public:
 	bool			ShouldHealTarget( CBaseEntity *pTarget );
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
+
 	//---------------------------------
 	// Behavior
 	//---------------------------------
@@ -77,7 +80,8 @@ public:
 
 	bool			IgnorePlayerPushing( void );
 
-	int				DrawDebugTextOverlays( void );
+	// todo: this
+	//int				DrawDebugTextOverlays( void );
 
 	virtual const char *SelectRandomExpressionForState( NPC_STATE state );
 	virtual void	OnChangeRunningBehavior( CAI_BehaviorBase *pOldBehavior, CAI_BehaviorBase *pNewBehavior );
@@ -105,8 +109,7 @@ public:
 	void			RemoveFromPlayerSquad();
 	void 			TogglePlayerSquadState();
 	void			UpdatePlayerSquad();
-	// TODO: this thing
-	//static int __cdecl PlayerSquadCandidateSortFunc( const SquadCandidate_t *, const SquadCandidate_t * );
+	static int __cdecl PlayerSquadCandidateSortFunc( const SquadCandidateHGrunt_t *, const SquadCandidateHGrunt_t * );
 	void 			FixupPlayerSquad();
 	void 			ClearFollowTarget();
 	void 			UpdateFollowCommandPoint();
@@ -123,6 +126,14 @@ public:
 
 	virtual bool	UseAttackSquadSlots()	{ return false; }
 
+	//---------------------------------
+	// Damage handling
+	//---------------------------------
+	int 			OnTakeDamage_Alive( const CTakeDamageInfo &info );
+	virtual bool	PassesDamageFilter( const CTakeDamageInfo &info );
+
+	// todo: input/output funcs
+
 private:
 	enum
 	{
@@ -132,11 +143,20 @@ private:
 
 		TASK_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_TASK
 	};
-	int m_iSquadRole;
-	float m_flLastHealTime;
-	int m_iHealCharge; // how much healing the medic can do before they're unable to heal any more
-	CBaseEntity *m_hLastHealTarget;
+	int				m_iSquadRole;
+	float			m_flLastHealTime;
+	int				m_iHealCharge; // how much healing the medic can do before they're unable to heal any more
+	CBaseEntity		*m_hLastHealTarget;
 	CHandle<CAI_FollowGoal>	m_hSavedFollowGoalEnt;
+	float			m_flTimeJoinedPlayerSquad;
+	bool			m_bWasInPlayerSquad;
+	float			m_flTimeLastCloseToPlayer;
+	bool			m_bNeverLeavePlayerSquad; // Don't leave the player squad unless killed, or removed via Entity I/O. 
+	CSimpleSimTimer	m_AutoSummonTimer;
+	Vector			m_vAutoSummonAnchor;
+	string_t		m_iszOriginalSquad;
+	int				m_iFriendlyFireTolerance;
 
+	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;
 };
