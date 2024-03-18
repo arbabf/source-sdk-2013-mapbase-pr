@@ -17,6 +17,7 @@
 #include "ai_hint.h"
 #include "ai_interactions.h"
 #include "ai_looktarget.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -55,7 +56,7 @@ DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
 DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
 DEFINE_FIELD(m_hLastHealTarget, FIELD_EHANDLE),
 DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
-DEFINE_FIELD(m_iFriendlyFireTolerance, FIELD_INTEGER),
+DEFINE_FIELD(m_iFriendlyFireCount, FIELD_INTEGER),
 DEFINE_FIELD(m_iOldNpcState, FIELD_INTEGER),
 DEFINE_FIELD( m_bWasInPlayerSquad, FIELD_BOOLEAN ),
 DEFINE_FIELD(m_bRemovedFromPlayerSquad, FIELD_BOOLEAN),
@@ -89,8 +90,10 @@ void CNPC_HGrunt::Spawn( void )
 	m_flLastHealTime = -1;
 	m_bWasInPlayerSquad = IsInPlayerSquad();
 	m_iszOriginalSquad = m_SquadName;
-	m_iFriendlyFireTolerance = 0;
+	m_iFriendlyFireCount = 0;
 	m_bRemovedFromPlayerSquad = false;
+
+	CapabilitiesAdd( bits_CAP_SQUAD | bits_CAP_FRIENDLY_DMG_IMMUNE | bits_CAP_NO_HIT_SQUADMATES );
 	NPCInit();
 
 	SetUse( &CNPC_HGrunt::CommanderUse );
@@ -207,7 +210,7 @@ void CNPC_HGrunt::PrescheduleThink()
 	// reset friendly fire tolerance so subsequent encounters don't trigger hostility
 	// todo: time-based tolerance as well
 	if (m_iOldNpcState == NPC_STATE_COMBAT && GetState() == NPC_STATE_ALERT || GetState() == NPC_STATE_IDLE)
-		m_iFriendlyFireTolerance = 0; 
+		m_iFriendlyFireCount = 0; 
 	m_iOldNpcState = GetState();
 
 	if (IsInPlayerSquad())
@@ -1298,11 +1301,12 @@ void CNPC_HGrunt::OnMoveToCommandGoalFailed()
 void CNPC_HGrunt::AddToPlayerSquad()
 {
 	Assert( !IsInPlayerSquad() );
-	Warning( "Joining squad!\n" );
+	Warning( "Joining player squad!\n" );
+
 	AddToSquad( AllocPooledString( PLAYER_SQUADNAME ) );
 	m_hSavedFollowGoalEnt = m_FollowBehavior.GetFollowGoal();
 	m_FollowBehavior.SetFollowGoalDirect( NULL );
-
+	
 	FixupPlayerSquad();
 
 	SetCondition( COND_PLAYER_ADDED_TO_SQUAD );
@@ -1313,7 +1317,8 @@ void CNPC_HGrunt::AddToPlayerSquad()
 void CNPC_HGrunt::RemoveFromPlayerSquad()
 {
 	Assert( IsInPlayerSquad() );
-	Warning( "Leaving squad!\n" );
+	Warning( "Leaving player squad!\n" );
+
 	ClearFollowTarget();
 	ClearCommandGoal();
 	if (m_iszOriginalSquad != NULL_STRING && strcmp( STRING( m_iszOriginalSquad ), PLAYER_SQUADNAME ) != 0)
@@ -1896,10 +1901,12 @@ bool CNPC_HGrunt::PassesDamageFilter( const CTakeDamageInfo &info )
 	return BaseClass::PassesDamageFilter( info );
 }
 
+//-----------------------------------------------------------------
+// Purpose: Handle how the hgrunt reacts to damage from the player.
+//-----------------------------------------------------------------
 int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 {
-	// handle how the hgrunt reacts to damage from the player
-	// todo: indirect crowbar, fatal kills under any circumstance, more tolerance i think
+	// todo: more tolerance i think
 	CBasePlayer *pPlayer = AI_GetSinglePlayer();
 	if (info.GetAttacker() == pPlayer && IRelationType(UTIL_GetLocalPlayer()) == D_LI)
 	{
@@ -1918,7 +1925,7 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 			}
 			else
 			{
-				m_iFriendlyFireTolerance++;
+				m_iFriendlyFireCount++;
 			}
 		}
 		else
@@ -1932,7 +1939,7 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 			else if (GetState() == NPC_STATE_COMBAT)
 			{
 				// otherwise, assume it was probably unintentional friendly fire.
-				m_iFriendlyFireTolerance++;
+				m_iFriendlyFireCount++;
 			}
 			else
 			{
@@ -1941,11 +1948,11 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 			}
 		}
 		
-		if (!bHatePlayer && m_iFriendlyFireTolerance < FRIENDLY_FIRE_TOLERANCE_LIMIT)
+		if (!bHatePlayer && m_iFriendlyFireCount < FRIENDLY_FIRE_TOLERANCE_LIMIT)
 		{
 			Warning( "Don't do that again!\n" );
 		}
-		else if (m_iFriendlyFireTolerance >= FRIENDLY_FIRE_TOLERANCE_LIMIT)
+		else if (m_iFriendlyFireCount >= FRIENDLY_FIRE_TOLERANCE_LIMIT)
 		{
 			bHatePlayer = true;
 		}
@@ -1953,22 +1960,11 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 		if (bHatePlayer)
 		{
 			// turn the npc and their squad hostile
-			AddEntityRelationship( pPlayer, D_HT, 1 );
-			AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-			Warning( "HGrunt hates the player!\n" );
+			TurnHostileToPlayer();
 			
 			if (IsInSquad())
 			{
-				AISquadIter_t iter;
-				for (CAI_BaseNPC *pAllyNpc = m_pSquad->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = m_pSquad->GetNextMember( &iter ))
-				{
-					if (pAllyNpc != this)
-					{
-						pAllyNpc->AddEntityRelationship( pPlayer, D_HT, 1 );
-						pAllyNpc->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-						Warning( "HGrunt hates the player!\n" );
-					}
-				}
+				TurnSquadHostileToPlayer();
 			}
 			else
 			{
@@ -1982,9 +1978,7 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 						CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pEntity);
 						if (pHGrunt)
 						{
-							pHGrunt->AddEntityRelationship( pPlayer, D_HT, 1 );
-							pHGrunt->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-							Warning( "HGrunt hates the player!\n" );
+							pHGrunt->TurnHostileToPlayer();
 						}
 					}
 				}
@@ -1995,6 +1989,32 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 	return BaseClass::OnTakeDamage_Alive( info );
 }
 
+void CNPC_HGrunt::TurnSquadHostileToPlayer()
+{
+	AISquadIter_t iter;
+	for (CAI_BaseNPC *pAllyNpc = m_pSquad->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = m_pSquad->GetNextMember( &iter ))
+	{
+		if (pAllyNpc != this)
+		{
+			// this doesn't work if the squad contains npcs that aren't hgrunts.
+			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
+			if (pHGrunt)
+				pHGrunt->TurnHostileToPlayer();
+		}
+	}
+}
+
+void CNPC_HGrunt::TurnHostileToPlayer()
+{
+	CBasePlayer *pPlayer = AI_GetSinglePlayer();
+	if (IRelationType( pPlayer ) != D_HT)
+	{
+		RemoveFromPlayerSquad();
+		AddEntityRelationship( pPlayer, D_HT, 1 );
+		AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
+		Warning( "HGrunt hates the player!\n" );
+	}
+}
 // schedules
 AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 DECLARE_TASK(TASK_HGRUNT_MEDIC_HEAL)

@@ -31,11 +31,13 @@ public:
 	virtual void	Spawn();
 
 	//---------------------------------
-	// HGrunt-specific utility functions
+	// HGrunt-specific functions
 	//---------------------------------
 	bool			IsMedic() { return m_iSquadRole == HGRUNT_MEDIC; }
 	bool			IsEngineer() { return m_iSquadRole == HGRUNT_ENGINEER; }
 	Class_T 		Classify() { return CLASS_PLAYER_ALLY; }
+	void			TurnSquadHostileToPlayer();
+	void			TurnHostileToPlayer();
 
 	//---------------------------------
 	// Healing-related functions
@@ -159,7 +161,7 @@ private:
 	CSimpleSimTimer	m_AutoSummonTimer;
 	Vector			m_vAutoSummonAnchor;
 	string_t		m_iszOriginalSquad;
-	int				m_iFriendlyFireTolerance;
+	int				m_iFriendlyFireCount; // how many times this npc has been friendly fired
 	int				m_iOldNpcState;
 	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
 
