@@ -156,6 +156,8 @@ private:
 	Vector			m_vAutoSummonAnchor;
 	string_t		m_iszOriginalSquad;
 	int				m_iFriendlyFireTolerance;
+	int				m_iOldNpcState;
+	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;

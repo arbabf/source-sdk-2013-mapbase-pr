@@ -43,7 +43,7 @@ ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); 
 #define DebuggingCommanderMode() (ai_citizen_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
 #define COMMAND_POINT_CLASSNAME "info_target_command_point"
 // todo: clean up autosquad function
-#define ShouldAutosquad() (HasSpawnFlags(SF_HGRUNT_JOIN_WHEN_NEARBY))
+#define ShouldAutosquad() (HasSpawnFlags(SF_HGRUNT_JOIN_WHEN_NEARBY) && !m_bRemovedFromPlayerSquad && !HasSpawnFlags(SF_HGRUNT_NOT_COMMANDABLE))
 
 LINK_ENTITY_TO_CLASS( npc_hgrunt, CNPC_HGrunt );
 
@@ -56,7 +56,9 @@ DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
 DEFINE_FIELD(m_hLastHealTarget, FIELD_EHANDLE),
 DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
 DEFINE_FIELD(m_iFriendlyFireTolerance, FIELD_INTEGER),
+DEFINE_FIELD(m_iOldNpcState, FIELD_INTEGER),
 DEFINE_FIELD( m_bWasInPlayerSquad, FIELD_BOOLEAN ),
+DEFINE_FIELD(m_bRemovedFromPlayerSquad, FIELD_BOOLEAN),
 DEFINE_FIELD( m_vAutoSummonAnchor, FIELD_POSITION_VECTOR ),
 DEFINE_FIELD( m_iszOriginalSquad, FIELD_STRING ),
 DEFINE_EMBEDDED( m_AutoSummonTimer ),
@@ -88,7 +90,7 @@ void CNPC_HGrunt::Spawn( void )
 	m_bWasInPlayerSquad = IsInPlayerSquad();
 	m_iszOriginalSquad = m_SquadName;
 	m_iFriendlyFireTolerance = 0;
-
+	m_bRemovedFromPlayerSquad = false;
 	NPCInit();
 
 	SetUse( &CNPC_HGrunt::CommanderUse );
@@ -201,6 +203,12 @@ void CNPC_HGrunt::PrescheduleThink()
 
 	UpdatePlayerSquad();
 	UpdateFollowCommandPoint();
+
+	// reset friendly fire tolerance so subsequent encounters don't trigger hostility
+	// todo: time-based tolerance as well
+	if (m_iOldNpcState == NPC_STATE_COMBAT && GetState() == NPC_STATE_ALERT || GetState() == NPC_STATE_IDLE)
+		m_iFriendlyFireTolerance = 0; 
+	m_iOldNpcState = GetState();
 
 	if (IsInPlayerSquad())
 	{
@@ -1230,7 +1238,11 @@ void CNPC_HGrunt::CommanderUse( CBaseEntity *pActivator, CBaseEntity *pCaller, U
 		else if (!IsInPlayerSquad())
 			AddToPlayerSquad();
 		else if (IsInPlayerSquad())
+		{
+			m_bRemovedFromPlayerSquad = true;
 			RemoveFromPlayerSquad();
+		}
+			
 		//else if (GetCurSchedule() && ConditionInterruptsCurSchedule( COND_IDLE_INTERRUPT ))
 		//{
 		//	if (SpeakIfAllowed( TLK_QUESTION, NULL, true ))
@@ -1286,7 +1298,7 @@ void CNPC_HGrunt::OnMoveToCommandGoalFailed()
 void CNPC_HGrunt::AddToPlayerSquad()
 {
 	Assert( !IsInPlayerSquad() );
-
+	Warning( "Joining squad!\n" );
 	AddToSquad( AllocPooledString( PLAYER_SQUADNAME ) );
 	m_hSavedFollowGoalEnt = m_FollowBehavior.GetFollowGoal();
 	m_FollowBehavior.SetFollowGoalDirect( NULL );
@@ -1301,7 +1313,7 @@ void CNPC_HGrunt::AddToPlayerSquad()
 void CNPC_HGrunt::RemoveFromPlayerSquad()
 {
 	Assert( IsInPlayerSquad() );
-
+	Warning( "Leaving squad!\n" );
 	ClearFollowTarget();
 	ClearCommandGoal();
 	if (m_iszOriginalSquad != NULL_STRING && strcmp( STRING( m_iszOriginalSquad ), PLAYER_SQUADNAME ) != 0)
@@ -1327,22 +1339,22 @@ void CNPC_HGrunt::TogglePlayerSquadState()
 
 	if (!IsInPlayerSquad())
 	{
-		Warning( "Joining squad!\n" );
 		AddToPlayerSquad();
 
-		if (HaveCommandGoal())
+		// todo: speech
+		/*if (HaveCommandGoal())
 		{
 			SpeakCommandResponse( TLK_COMMANDED );
 		}
 		else if (m_FollowBehavior.GetFollowTarget() == UTIL_GetLocalPlayer())
 		{
 			SpeakCommandResponse( TLK_STARTFOLLOW );
-		}
+		}*/
 	}
 	else
 	{
-		Warning( "Leaving squad!\n" );
 		SpeakCommandResponse( TLK_STOPFOLLOW );
+		m_bRemovedFromPlayerSquad = true;
 		RemoveFromPlayerSquad();
 	}
 }
@@ -1886,18 +1898,44 @@ bool CNPC_HGrunt::PassesDamageFilter( const CTakeDamageInfo &info )
 
 int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 {
-	// handle how the hgrunt handles damage from the player
-	if (info.GetAttacker() == AI_GetSinglePlayer())
+	// handle how the hgrunt reacts to damage from the player
+	// todo: indirect crowbar, fatal kills under any circumstance, more tolerance i think
+	CBasePlayer *pPlayer = AI_GetSinglePlayer();
+	if (info.GetAttacker() == pPlayer && IRelationType(UTIL_GetLocalPlayer()) == D_LI)
 	{
 		bool bHatePlayer = false;
 		if (info.GetDamageType() == DMG_BLAST)
 		{
 			// first, handle nearby explosions. if we take too much damage from the explosion assume it's intentional friendly fire
 			if (info.GetDamage() >= GetMaxHealth() * 0.5f)
+			{
 				bHatePlayer = true;
+			}
+			else
+			{
+				Warning( "Don't do that again!\n" );
+			}
+		}
+		else if (info.GetDamageType() == DMG_CLUB)
+		{
+			// trace a line to see if the crowbar swing was intended for me
+			Vector vecSrc = pPlayer->Weapon_ShootPosition();
+			Vector vecAiming = pPlayer->GetAutoaimVector( 0 );
+			trace_t tr;
+			UTIL_TraceLine( vecSrc, vecSrc + vecAiming * 32.0f, MASK_SHOT, pPlayer, COLLISION_GROUP_NONE, &tr );
+			if (tr.m_pEnt == this)
+			{
+				bHatePlayer = true;
+			}
+			else if (m_iFriendlyFireTolerance < FRIENDLY_FIRE_TOLERANCE_LIMIT)
+			{
+				m_iFriendlyFireTolerance++;
+				Warning( "Don't do that again!\n" );
+			}
 		}
 		else
 		{
+			// then, handle any other types of damage
 			if (GetState() == NPC_STATE_IDLE || GetState() == NPC_STATE_ALERT)
 			{
 				// if the player attacks me here, assume that they're intentionally killing me, and defend myself
@@ -1912,30 +1950,34 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 					// definitely not unintentional friendly fire.
 					bHatePlayer = true;
 				}
+				else
+				{
+					Warning( "Don't do that again!\n" );
+				}
 			}
 		}
 		
 
-		if (bHatePlayer)
+		if (bHatePlayer && IRelationType(pPlayer) != D_HT)
 		{
-			AddEntityRelationship( AI_GetSinglePlayer(), D_HT, 1 );
+			// turn the npc and their squad hostile
+			AddEntityRelationship( pPlayer, D_HT, 1 );
 			AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-			RemoveFromPlayerSquad();
 			Warning( "HGrunt hates the player!\n" );
-			// get the rest of the squad to hate the player
-			/*AISquadIter_t iter;
-			for (CAI_BaseNPC *pAllyNpc = m_pSquad->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = m_pSquad->GetNextMember( &iter ))
+			
+			if (IsInSquad())
 			{
-				CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
-				if (pHGrunt)
+				AISquadIter_t iter;
+				for (CAI_BaseNPC *pAllyNpc = m_pSquad->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = m_pSquad->GetNextMember( &iter ))
 				{
-					pHGrunt->AddEntityRelationship( AI_GetSinglePlayer(), D_HT, 1 );
-					pHGrunt->RemoveFromPlayerSquad();
-					pHGrunt->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-					Warning( "HGrunt hates the player!\n" );
+					if (pAllyNpc != this)
+					{
+						pAllyNpc->AddEntityRelationship( pPlayer, D_HT, 1 );
+						pAllyNpc->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
+						Warning( "HGrunt hates the player!\n" );
+					}
 				}
-				
-			}*/
+			}
 		}
 	}
 

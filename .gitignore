@@ -58,4 +58,5 @@ config.cfg
 *.vcxproj*
 *responserules*
 *Release_mod*
-
+*Debug*
+*.lib
