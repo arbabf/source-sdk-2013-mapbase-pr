@@ -1904,33 +1904,21 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 	if (info.GetAttacker() == pPlayer && IRelationType(UTIL_GetLocalPlayer()) == D_LI)
 	{
 		bool bHatePlayer = false;
-		if (info.GetDamageType() == DMG_BLAST)
+		if (info.GetDamage() >= GetHealth())
 		{
-			// first, handle nearby explosions. if we take too much damage from the explosion assume it's intentional friendly fire
+			// first, assume any fatal hit is intentional friendly fire
+			bHatePlayer = true;
+		}
+		else if (info.GetDamageType() == DMG_BLAST)
+		{
+			// then, handle nearby explosions. if we take too much damage from the explosion assume it's intentional friendly fire
 			if (info.GetDamage() >= GetMaxHealth() * 0.5f)
 			{
 				bHatePlayer = true;
 			}
 			else
 			{
-				Warning( "Don't do that again!\n" );
-			}
-		}
-		else if (info.GetDamageType() == DMG_CLUB)
-		{
-			// trace a line to see if the crowbar swing was intended for me
-			Vector vecSrc = pPlayer->Weapon_ShootPosition();
-			Vector vecAiming = pPlayer->GetAutoaimVector( 0 );
-			trace_t tr;
-			UTIL_TraceLine( vecSrc, vecSrc + vecAiming * 32.0f, MASK_SHOT, pPlayer, COLLISION_GROUP_NONE, &tr );
-			if (tr.m_pEnt == this)
-			{
-				bHatePlayer = true;
-			}
-			else if (m_iFriendlyFireTolerance < FRIENDLY_FIRE_TOLERANCE_LIMIT)
-			{
 				m_iFriendlyFireTolerance++;
-				Warning( "Don't do that again!\n" );
 			}
 		}
 		else
@@ -1945,20 +1933,24 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 			{
 				// otherwise, assume it was probably unintentional friendly fire.
 				m_iFriendlyFireTolerance++;
-				if (m_iFriendlyFireTolerance >= FRIENDLY_FIRE_TOLERANCE_LIMIT)
-				{
-					// definitely not unintentional friendly fire.
-					bHatePlayer = true;
-				}
-				else
-				{
-					Warning( "Don't do that again!\n" );
-				}
+			}
+			else
+			{
+				// we'll probably hit this at some point so i'd like to keep a case here
+				// todo: fix
 			}
 		}
 		
+		if (!bHatePlayer && m_iFriendlyFireTolerance < FRIENDLY_FIRE_TOLERANCE_LIMIT)
+		{
+			Warning( "Don't do that again!\n" );
+		}
+		else if (m_iFriendlyFireTolerance >= FRIENDLY_FIRE_TOLERANCE_LIMIT)
+		{
+			bHatePlayer = true;
+		}
 
-		if (bHatePlayer && IRelationType(pPlayer) != D_HT)
+		if (bHatePlayer)
 		{
 			// turn the npc and their squad hostile
 			AddEntityRelationship( pPlayer, D_HT, 1 );
@@ -1975,6 +1967,25 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 						pAllyNpc->AddEntityRelationship( pPlayer, D_HT, 1 );
 						pAllyNpc->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
 						Warning( "HGrunt hates the player!\n" );
+					}
+				}
+			}
+			else
+			{
+				// if our npc is squadless then just trigger whoever's nearby
+				CBaseEntity *pEntity = NULL;
+
+				for (CEntitySphereQuery sphere( GetAbsOrigin(), 512, 0 ); (pEntity = sphere.GetCurrentEntity()) != NULL; sphere.NextEntity())
+				{
+					if (pEntity != this)
+					{
+						CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pEntity);
+						if (pHGrunt)
+						{
+							pHGrunt->AddEntityRelationship( pPlayer, D_HT, 1 );
+							pHGrunt->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
+							Warning( "HGrunt hates the player!\n" );
+						}
 					}
 				}
 			}

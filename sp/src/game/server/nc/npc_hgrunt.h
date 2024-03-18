@@ -29,6 +29,10 @@ class CNPC_HGrunt : public CNPC_PlayerCompanion
 
 public:
 	virtual void	Spawn();
+
+	//---------------------------------
+	// HGrunt-specific utility functions
+	//---------------------------------
 	bool			IsMedic() { return m_iSquadRole == HGRUNT_MEDIC; }
 	bool			IsEngineer() { return m_iSquadRole == HGRUNT_ENGINEER; }
 	Class_T 		Classify() { return CLASS_PLAYER_ALLY; }
