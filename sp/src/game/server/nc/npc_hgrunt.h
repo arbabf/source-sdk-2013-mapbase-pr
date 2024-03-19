@@ -38,6 +38,7 @@ public:
 	Class_T 		Classify() { return CLASS_PLAYER_ALLY; }
 	void			TurnSquadHostileToPlayer();
 	void			TurnHostileToPlayer();
+	void			AddSquadToPlayerSquad();
 
 	//---------------------------------
 	// Healing-related functions
@@ -162,7 +163,7 @@ private:
 	Vector			m_vAutoSummonAnchor;
 	string_t		m_iszOriginalSquad;
 	int				m_iFriendlyFireCount; // how many times this npc has been friendly fired
-	int				m_iOldNpcState;
+	float			m_flLastFriendlyFireTime;
 	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;

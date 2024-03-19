@@ -41,6 +41,7 @@ ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); 
 
 #define HGRUNT_HEAL_RANGE 512.0f
 #define FRIENDLY_FIRE_TOLERANCE_LIMIT 3
+#define FRIENDLY_FIRE_TOLERANCE_TIME 5
 #define DebuggingCommanderMode() (ai_citizen_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
 #define COMMAND_POINT_CLASSNAME "info_target_command_point"
 // todo: clean up autosquad function
@@ -54,10 +55,10 @@ DEFINE_KEYFIELD( m_bNeverLeavePlayerSquad, FIELD_BOOLEAN, "neverleaveplayersquad
 DEFINE_FIELD(m_flLastHealTime, FIELD_TIME),
 DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
 DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
+DEFINE_FIELD(m_flLastFriendlyFireTime, FIELD_TIME),
 DEFINE_FIELD(m_hLastHealTarget, FIELD_EHANDLE),
 DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
 DEFINE_FIELD(m_iFriendlyFireCount, FIELD_INTEGER),
-DEFINE_FIELD(m_iOldNpcState, FIELD_INTEGER),
 DEFINE_FIELD( m_bWasInPlayerSquad, FIELD_BOOLEAN ),
 DEFINE_FIELD(m_bRemovedFromPlayerSquad, FIELD_BOOLEAN),
 DEFINE_FIELD( m_vAutoSummonAnchor, FIELD_POSITION_VECTOR ),
@@ -70,9 +71,6 @@ CSimpleSimTimer CNPC_HGrunt::gm_PlayerSquadEvaluateTimer;
 void CNPC_HGrunt::Spawn( void )
 {
 	BaseClass::Spawn();
-
-	m_iMaxHealth = sk_hgrunt_health.GetFloat();
-	m_iHealth = sk_hgrunt_health.GetFloat();
 
 	// tint hgrunt based on role and apply any role modifiers, for now
 	m_iHealCharge = -1;
@@ -87,6 +85,9 @@ void CNPC_HGrunt::Spawn( void )
 		SetRenderColor( 128, 128, 255 ); // slightly blue
 		break;
 	}
+
+	m_iMaxHealth = sk_hgrunt_health.GetFloat();
+	m_iHealth = sk_hgrunt_health.GetFloat();
 	m_flLastHealTime = -1;
 	m_bWasInPlayerSquad = IsInPlayerSquad();
 	m_iszOriginalSquad = m_SquadName;
@@ -207,11 +208,14 @@ void CNPC_HGrunt::PrescheduleThink()
 	UpdatePlayerSquad();
 	UpdateFollowCommandPoint();
 
-	// reset friendly fire tolerance so subsequent encounters don't trigger hostility
-	// todo: time-based tolerance as well
-	if (m_iOldNpcState == NPC_STATE_COMBAT && GetState() == NPC_STATE_ALERT || GetState() == NPC_STATE_IDLE)
-		m_iFriendlyFireCount = 0; 
-	m_iOldNpcState = GetState();
+	// decrease friendly fire tolerance over time
+	if (gpGlobals->curtime >= m_flLastFriendlyFireTime + FRIENDLY_FIRE_TOLERANCE_TIME)
+	{
+		if (m_iFriendlyFireCount > 0)
+			m_iFriendlyFireCount--;
+		m_flLastFriendlyFireTime = gpGlobals->curtime;
+	}
+		
 
 	if (IsInPlayerSquad())
 	{
@@ -422,7 +426,7 @@ int CNPC_HGrunt::SelectScheduleHeal()
 				pSquadmate = m_pSquad->GetNextMember( &iter );
 			}
 
-			if (pEntity)
+			if (pEntity && ShouldHealTarget(pEntity))
 			{
 				SetTarget( pEntity );
 				return SCHED_HGRUNT_MEDIC_HEAL;
@@ -840,13 +844,21 @@ void CNPC_HGrunt::Heal( CBaseCombatCharacter *pTarget )
 {
 	int hpTaken = pTarget->TakeHealth( sk_hgrunt_medic_heal_amount.GetInt(), DMG_GENERIC );
 	if (hpTaken == 0)
+	{
 		Warning( "Heal target was unable to be healed!\n" );
+		return;
+	}
 	RemoveHealCharge( hpTaken );
+	m_hLastHealTarget = pTarget;
 	// play anim and stuff
 }
 
 bool CNPC_HGrunt::ShouldHealTarget( CBaseEntity *pTarget )
 {
+	// heal my target if i'm friendly to them
+	if (IRelationType( pTarget ) != D_LI)
+		return false;
+
 	// heal them only if they're hurt
 	if (pTarget->GetHealth() > sk_hgrunt_medic_heal_threshold.GetInt())
 		return false;
@@ -1239,7 +1251,7 @@ void CNPC_HGrunt::CommanderUse( CBaseEntity *pActivator, CBaseEntity *pCaller, U
 		if (!ShouldAutosquad())
 			TogglePlayerSquadState();
 		else if (!IsInPlayerSquad())
-			AddToPlayerSquad();
+			AddSquadToPlayerSquad();
 		else if (IsInPlayerSquad())
 		{
 			m_bRemovedFromPlayerSquad = true;
@@ -1306,7 +1318,7 @@ void CNPC_HGrunt::AddToPlayerSquad()
 	AddToSquad( AllocPooledString( PLAYER_SQUADNAME ) );
 	m_hSavedFollowGoalEnt = m_FollowBehavior.GetFollowGoal();
 	m_FollowBehavior.SetFollowGoalDirect( NULL );
-	
+
 	FixupPlayerSquad();
 
 	SetCondition( COND_PLAYER_ADDED_TO_SQUAD );
@@ -1344,7 +1356,7 @@ void CNPC_HGrunt::TogglePlayerSquadState()
 
 	if (!IsInPlayerSquad())
 	{
-		AddToPlayerSquad();
+		AddSquadToPlayerSquad();
 
 		// todo: speech
 		/*if (HaveCommandGoal())
@@ -1431,11 +1443,21 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 
 	// Autosquadding
 	const float JOIN_PLAYER_XY_TOLERANCE_SQ = Square( 36 * 12 );
-	const float UNCONDITIONAL_JOIN_PLAYER_XY_TOLERANCE_SQ = Square( 12 * 12 );
-	const float UNCONDITIONAL_JOIN_PLAYER_Z_TOLERANCE = 5 * 12;
-	const float SECOND_TIER_JOIN_DIST_SQ = Square( 48 * 12 );
+	//const float UNCONDITIONAL_JOIN_PLAYER_XY_TOLERANCE_SQ = Square( 12 * 12 );
+	//const float UNCONDITIONAL_JOIN_PLAYER_Z_TOLERANCE = 5 * 12;
+	//const float SECOND_TIER_JOIN_DIST_SQ = Square( 48 * 12 );
 	if (pPlayer && ShouldAutosquad() && !(pPlayer->GetFlags() & FL_NOTARGET) && pPlayer->IsAlive())
 	{
+		const Vector &vPlayerPos = pPlayer->GetAbsOrigin();
+		float distSq = (vPlayerPos.AsVector2D() - GetAbsOrigin().AsVector2D()).LengthSqr();
+		if (distSq < JOIN_PLAYER_XY_TOLERANCE_SQ)
+		{
+			if (!IsInPlayerSquad())
+			{
+				AddSquadToPlayerSquad();
+			}
+		}
+		/*
 		CAI_BaseNPC **ppAIs = g_AI_Manager.AccessAIs();
 		CUtlVector<SquadCandidateHGrunt_t> candidates;
 		const Vector &vPlayerPos = pPlayer->GetAbsOrigin();
@@ -1613,6 +1635,7 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 				//}
 			}
 		}
+		*/
 	}
 }
 
@@ -1951,6 +1974,7 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 		if (!bHatePlayer && m_iFriendlyFireCount < FRIENDLY_FIRE_TOLERANCE_LIMIT)
 		{
 			Warning( "Don't do that again!\n" );
+			m_flLastFriendlyFireTime = gpGlobals->curtime;
 		}
 		else if (m_iFriendlyFireCount >= FRIENDLY_FIRE_TOLERANCE_LIMIT)
 		{
@@ -1959,14 +1983,9 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 
 		if (bHatePlayer)
 		{
-			// turn the npc and their squad hostile
-			TurnHostileToPlayer();
-			
-			if (IsInSquad())
-			{
-				TurnSquadHostileToPlayer();
-			}
-			else
+			// turn the hgrunt and their squad (or nearby hgrunts) hostile
+			TurnSquadHostileToPlayer();
+			if (!IsInSquad())
 			{
 				// if our npc is squadless then just trigger whoever's nearby
 				CBaseEntity *pEntity = NULL;
@@ -1978,7 +1997,8 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 						CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pEntity);
 						if (pHGrunt)
 						{
-							pHGrunt->TurnHostileToPlayer();
+							// if we find someone nearby, turn them and their squad hostile too
+							pHGrunt->TurnSquadHostileToPlayer();
 						}
 					}
 				}
@@ -1991,16 +2011,27 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 
 void CNPC_HGrunt::TurnSquadHostileToPlayer()
 {
-	AISquadIter_t iter;
-	for (CAI_BaseNPC *pAllyNpc = m_pSquad->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = m_pSquad->GetNextMember( &iter ))
+	// if i'm in a squad, turn everyone in my squad hostile against the player too
+	if (IsInSquad())
 	{
-		if (pAllyNpc != this)
+		CUtlVector<CNPC_HGrunt *> gruntsToRemove;
+		AISquadIter_t iter;
+		for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
 		{
 			// this doesn't work if the squad contains npcs that aren't hgrunts.
 			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
 			if (pHGrunt)
-				pHGrunt->TurnHostileToPlayer();
+				gruntsToRemove.AddToTail( pHGrunt );
 		}
+		for (int i = 0; i < gruntsToRemove.Count(); i++)
+		{
+			gruntsToRemove[i]->TurnHostileToPlayer();
+		}
+	}
+	else
+	{
+		// otherwise just turn myself hostile to the player
+		TurnHostileToPlayer();
 	}
 }
 
@@ -2013,6 +2044,39 @@ void CNPC_HGrunt::TurnHostileToPlayer()
 		AddEntityRelationship( pPlayer, D_HT, 1 );
 		AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
 		Warning( "HGrunt hates the player!\n" );
+	}
+}
+
+void CNPC_HGrunt::AddSquadToPlayerSquad()
+{
+	// if i'm in a squad, add everyone in my squad to the player squad
+	if (IsInSquad() && !IsInPlayerSquad())
+	{
+		CUtlVector<CNPC_HGrunt *> gruntsToAdd;
+		AISquadIter_t iter;
+
+		for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
+		{
+			// this doesn't work if the squad contains npcs that aren't hgrunts.
+			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
+			if (pHGrunt)
+				gruntsToAdd.AddToTail( pHGrunt );
+		}
+
+		for (int i = 0; i < gruntsToAdd.Count(); i++)
+		{
+			gruntsToAdd[i]->AddToPlayerSquad();
+		}
+	}
+	else if (!IsInSquad() && !IsInPlayerSquad())
+	{
+		// otherwise just add myself to the player squad
+		AddToPlayerSquad();
+	}
+	else if (IsInPlayerSquad())
+	{
+		Warning( "Attempted to add squadmates to player squad, but this HGrunt is already in the player squad!\n" );
+		return;
 	}
 }
 // schedules
