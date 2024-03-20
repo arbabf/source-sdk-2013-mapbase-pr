@@ -35,7 +35,8 @@ const int MAX_PLAYER_SQUAD = 8;
 
 ConVar sk_hgrunt_health( "sk_hgrunt_health", "60" );
 ConVar sk_hgrunt_medic_heal_amount( "sk_hgrunt_medic_heal_amount", "40" ); // how much to heal the target for
-ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "60" ); // heal once every this seconds
+ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "3" ); // heal once every this seconds todo: change to 30
+ConVar sk_hgrunt_medic_same_heal_cooldown( "sk_hgrunt_medic_same_heal_cooldown", "6" ); // heal same target once every this seconds todo: change to 60
 ConVar sk_hgrunt_medic_heal_threshold( "sk_hgrunt_medic_heal_threshold", "40" ); // heal if target is less than this hp
 ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); // how much healing the hgrunt medic can have stored
 
@@ -93,6 +94,7 @@ void CNPC_HGrunt::Spawn( void )
 	m_iszOriginalSquad = m_SquadName;
 	m_iFriendlyFireCount = 0;
 	m_bRemovedFromPlayerSquad = false;
+	m_hLastHealTarget = NULL;
 
 	CapabilitiesAdd( bits_CAP_SQUAD | bits_CAP_FRIENDLY_DMG_IMMUNE | bits_CAP_NO_HIT_SQUADMATES );
 	NPCInit();
@@ -170,6 +172,18 @@ void CNPC_HGrunt::GatherConditions()
 			SetCondition( COND_HGRUNT_MEDIC_HEAL_PLAYER );
 		}
 #endif
+	}
+
+	if (!IsMedic())
+	{
+		if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat())
+		{
+			SetCondition( COND_HGRUNT_NEED_HEALING );
+		}
+		else
+		{
+			ClearCondition( COND_HGRUNT_NEED_HEALING );
+		}
 	}
 }
 
@@ -367,6 +381,10 @@ int CNPC_HGrunt::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectSchedule()
 {
+	if (HasCondition( COND_HGRUNT_NEED_HEALING ))
+	{
+		return SCHED_HGRUNT_ASK_HEAL;
+	}
 	return BaseClass::SelectSchedule();
 }
 
@@ -583,7 +601,7 @@ void CNPC_HGrunt::StartTask( const Task_t *pTask )
 	case TASK_HGRUNT_MEDIC_HEAL:
 		if (IsMedic())
 		{
-			if (GetTarget() && GetTarget()->IsPlayer() && GetTarget()->m_iMaxHealth == GetTarget()->m_iHealth)
+			if (GetTarget() && GetTarget()->m_iMaxHealth == GetTarget()->m_iHealth)
 			{
 				// Doesn't need us anymore
 				TaskComplete();
@@ -627,11 +645,11 @@ void CNPC_HGrunt::RunTask( const Task_t *pTask )
 	}
 
 	case TASK_HGRUNT_MEDIC_HEAL:
-		if (IsSequenceFinished())
+		/*if (IsSequenceFinished())
 		{
 			TaskComplete();
-		}
-		else if (!GetTarget())
+		}*/
+		if (!GetTarget())
 		{
 			// Our heal target was killed or deleted somehow.
 			TaskFail( FAIL_NO_TARGET );
@@ -642,6 +660,9 @@ void CNPC_HGrunt::RunTask( const Task_t *pTask )
 				TaskComplete();
 
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetTarget()->GetAbsOrigin() );
+			// the heal function will be tied to an animevent or something similar. for now let's just heal from this task code
+			Heal();
+			TaskComplete();
 		}
 		break;
 
@@ -831,26 +852,42 @@ void CNPC_HGrunt::OnEndMoveAndShoot()
 
 bool CNPC_HGrunt::CanHeal()
 {
-	if (gpGlobals->curtime < m_flLastHealTime + sk_hgrunt_medic_heal_cooldown.GetFloat())
+	if (!IsMedic())
 		return false;
 
-	if (m_iHealCharge <= 0)
+	if (gpGlobals->curtime < m_flLastHealTime + sk_hgrunt_medic_heal_cooldown.GetFloat())
+	{
+		Warning( "Recharging heals...\n" );
 		return false;
+	}
+
+	if (m_iHealCharge <= 0)
+	{
+		Warning( "I have no heal charge!\n" );
+		return false;
+	}
 
 	return true;
 }
 
-void CNPC_HGrunt::Heal( CBaseCombatCharacter *pTarget )
+void CNPC_HGrunt::Heal()
 {
-	int hpTaken = pTarget->TakeHealth( sk_hgrunt_medic_heal_amount.GetInt(), DMG_GENERIC );
+	int hpTaken = GetTarget()->TakeHealth( sk_hgrunt_medic_heal_amount.GetFloat(), DMG_GENERIC );
 	if (hpTaken == 0)
 	{
 		Warning( "Heal target was unable to be healed!\n" );
 		return;
 	}
+	GetTarget()->RemoveAllDecals();
 	RemoveHealCharge( hpTaken );
-	m_hLastHealTarget = pTarget;
-	// play anim and stuff
+	m_hLastHealTarget = GetTarget();
+	m_flLastHealTime = gpGlobals->curtime;
+
+	if (GetTarget()->IsPlayer())
+	{
+		CPASAttenuationFilter filter( GetTarget(), "HealthKit.Touch" );
+		EmitSound( filter, GetTarget()->entindex(), "HealthKit.Touch" );
+	}
 }
 
 bool CNPC_HGrunt::ShouldHealTarget( CBaseEntity *pTarget )
@@ -864,8 +901,16 @@ bool CNPC_HGrunt::ShouldHealTarget( CBaseEntity *pTarget )
 		return false;
 
 	// don't let one character hog the heals
-	if (pTarget == m_hLastHealTarget)
+	if (pTarget == m_hLastHealTarget && gpGlobals->curtime < m_flLastHealTime + sk_hgrunt_medic_same_heal_cooldown.GetFloat())
 		return false;
+
+	// heal only my squadmates
+	if ((IsInSquad() && !GetSquad()->SquadIsMember( pTarget )) &&
+		!(IsInPlayerSquad() && pTarget->IsPlayer()))
+	{
+		return false;
+	}
+		
 
 	return true;
 }
@@ -2018,7 +2063,6 @@ void CNPC_HGrunt::TurnSquadHostileToPlayer()
 		AISquadIter_t iter;
 		for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
 		{
-			// this doesn't work if the squad contains npcs that aren't hgrunts.
 			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
 			if (pHGrunt)
 				gruntsToRemove.AddToTail( pHGrunt );
@@ -2057,7 +2101,6 @@ void CNPC_HGrunt::AddSquadToPlayerSquad()
 
 		for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
 		{
-			// this doesn't work if the squad contains npcs that aren't hgrunts.
 			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
 			if (pHGrunt)
 				gruntsToAdd.AddToTail( pHGrunt );
@@ -2079,7 +2122,35 @@ void CNPC_HGrunt::AddSquadToPlayerSquad()
 		return;
 	}
 }
+
+/*bool CNPC_HGrunt::SquadHasMedic()
+{
+	AISquadIter_t iter;
+	for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
+	{
+		// this doesn't work if the squad contains npcs that aren't hgrunts.
+		// todo: don't do a cast, we need something less expensive
+		CNPC_HGrunt *pHGrunt = static_cast<CNPC_HGrunt *>(pAllyNpc);
+		if (pHGrunt && pHGrunt->IsMedic())
+			return true;
+	}
+	return false;
+}*/
+
 // schedules
 AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
-DECLARE_TASK(TASK_HGRUNT_MEDIC_HEAL)
+	DECLARE_TASK(TASK_HGRUNT_MEDIC_HEAL)
+	DEFINE_SCHEDULE
+	(
+		SCHED_HGRUNT_MEDIC_HEAL,
+
+		"	Tasks"
+		"		TASK_GET_PATH_TO_TARGET			0"
+		"		TASK_MOVE_TO_TARGET_RANGE		50"
+		"		TASK_STOP_MOVING				0"
+		"		TASK_FACE_IDEAL					0"
+		"		TASK_HGRUNT_MEDIC_HEAL			0"
+		"	"
+		"	Interrupts"
+	)
 AI_END_CUSTOM_NPC()

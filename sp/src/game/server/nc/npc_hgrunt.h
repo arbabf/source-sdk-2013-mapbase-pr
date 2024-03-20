@@ -31,7 +31,7 @@ public:
 	virtual void	Spawn();
 
 	//---------------------------------
-	// HGrunt-specific functions
+	// HGrunt-specific utility functions
 	//---------------------------------
 	bool			IsMedic() { return m_iSquadRole == HGRUNT_MEDIC; }
 	bool			IsEngineer() { return m_iSquadRole == HGRUNT_ENGINEER; }
@@ -44,7 +44,7 @@ public:
 	// Healing-related functions
 	//---------------------------------
 	bool			CanHeal();
-	void			Heal( CBaseCombatCharacter *pTarget );
+	void			Heal( );
 	bool			ShouldHealTarget( CBaseEntity *pTarget );
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
@@ -145,8 +145,10 @@ private:
 	enum
 	{
 		COND_HGRUNT_MEDIC_HEAL_PLAYER = BaseClass::NEXT_CONDITION,
+		COND_HGRUNT_NEED_HEALING,
 
 		SCHED_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_SCHEDULE,
+		SCHED_HGRUNT_ASK_HEAL,
 
 		TASK_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_TASK
 	};
