@@ -18,6 +18,8 @@
 #include "ai_interactions.h"
 #include "ai_looktarget.h"
 
+#include "saverestore_utlvector.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -39,12 +41,16 @@ ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "3" ); //
 ConVar sk_hgrunt_medic_same_heal_cooldown( "sk_hgrunt_medic_same_heal_cooldown", "6" ); // heal same target once every this seconds todo: change to 60
 ConVar sk_hgrunt_medic_heal_threshold( "sk_hgrunt_medic_heal_threshold", "40" ); // heal if target is less than this hp
 ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); // how much healing the hgrunt medic can have stored
+ConVar sk_hgrunt_heal_call_timeout( "sk_hgrunt_heal_call_timeout", "10" ); // how long an hgrunt should wait before deciding to stop waiting for a medic todo: 15
+ConVar sk_hgrunt_heal_call_cooldown( "sk_hgrunt_heal_call_cooldown", "20" ); // how long before an hgrunt will call for a medic again todo: 60
 
 #define HGRUNT_HEAL_RANGE 512.0f
 #define FRIENDLY_FIRE_TOLERANCE_LIMIT 3
 #define FRIENDLY_FIRE_TOLERANCE_TIME 5
+
 #define DebuggingCommanderMode() (ai_citizen_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
 #define COMMAND_POINT_CLASSNAME "info_target_command_point"
+
 // todo: clean up autosquad function
 #define ShouldAutosquad() (HasSpawnFlags(SF_HGRUNT_JOIN_WHEN_NEARBY) && !m_bRemovedFromPlayerSquad && !HasSpawnFlags(SF_HGRUNT_NOT_COMMANDABLE))
 
@@ -57,6 +63,7 @@ DEFINE_FIELD(m_flLastHealTime, FIELD_TIME),
 DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
 DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
 DEFINE_FIELD(m_flLastFriendlyFireTime, FIELD_TIME),
+DEFINE_FIELD(m_flLastHealCallTime, FIELD_TIME),
 DEFINE_FIELD(m_hLastHealTarget, FIELD_EHANDLE),
 DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
 DEFINE_FIELD(m_iFriendlyFireCount, FIELD_INTEGER),
@@ -68,6 +75,12 @@ DEFINE_EMBEDDED( m_AutoSummonTimer ),
 END_DATADESC()
 
 CSimpleSimTimer CNPC_HGrunt::gm_PlayerSquadEvaluateTimer;
+
+// heal todos:	keep an hgrunt waiting if a medic is attending but not with them yet
+//				deny request for heal if a medic has no heals
+//				medic call other medics
+//				multiple medics attending to one guy
+//				timer fucks up if you restart the map
 
 void CNPC_HGrunt::Spawn( void )
 {
@@ -95,6 +108,7 @@ void CNPC_HGrunt::Spawn( void )
 	m_iFriendlyFireCount = 0;
 	m_bRemovedFromPlayerSquad = false;
 	m_hLastHealTarget = NULL;
+	m_flLastHealCallTime = -1;
 
 	CapabilitiesAdd( bits_CAP_SQUAD | bits_CAP_FRIENDLY_DMG_IMMUNE | bits_CAP_NO_HIT_SQUADMATES );
 	NPCInit();
@@ -173,17 +187,17 @@ void CNPC_HGrunt::GatherConditions()
 		}
 #endif
 	}
-
-	if (!IsMedic())
+	if (NameMatches("hgrunt_generic_3"))
+		DevMsg( "%f\n", m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() );
+	if (GetHGruntSquad()->SquadHasMedic() &&
+		GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
+		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat())
 	{
-		if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat())
-		{
-			SetCondition( COND_HGRUNT_NEED_HEALING );
-		}
-		else
-		{
-			ClearCondition( COND_HGRUNT_NEED_HEALING );
-		}
+		SetCondition( COND_HGRUNT_NEED_HEALING );
+	}
+	else
+	{
+		ClearCondition( COND_HGRUNT_NEED_HEALING );
 	}
 }
 
@@ -381,10 +395,6 @@ int CNPC_HGrunt::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectSchedule()
 {
-	if (HasCondition( COND_HGRUNT_NEED_HEALING ))
-	{
-		return SCHED_HGRUNT_ASK_HEAL;
-	}
 	return BaseClass::SelectSchedule();
 }
 
@@ -424,10 +434,25 @@ int CNPC_HGrunt::SelectScheduleHeal()
 		if (m_pSquad)
 		{
 			pEntity = NULL;
-			float distClosestSq = HGRUNT_HEAL_RANGE*HGRUNT_HEAL_RANGE;
-			float distCurSq;
 
-			AISquadIter_t iter;
+			// find any medic call sounds
+			CSound *pSound;
+			pSound = GetBestSound();
+			if (pSound != NULL)
+			{
+				if (pSound->m_iType & SOUND_MEDIC_CALL)
+				{
+					CBaseEntity *pOwner = pSound->m_hOwner;
+					if (GetSquad()->SquadIsMember( pOwner ) && ShouldHealTarget(pOwner))
+					{
+						pEntity = pOwner;
+					}
+				}
+			}
+		}
+			/*float distClosestSq = HGRUNT_HEAL_RANGE*HGRUNT_HEAL_RANGE;
+			float distCurSq; */
+			/*AISquadIter_t iter;
 			CAI_BaseNPC *pSquadmate = m_pSquad->GetFirstMember( &iter );
 			while (pSquadmate)
 			{
@@ -442,13 +467,12 @@ int CNPC_HGrunt::SelectScheduleHeal()
 				}
 
 				pSquadmate = m_pSquad->GetNextMember( &iter );
-			}
+			}*/
 
-			if (pEntity && ShouldHealTarget(pEntity))
-			{
-				SetTarget( pEntity );
-				return SCHED_HGRUNT_MEDIC_HEAL;
-			}
+		if (pEntity && ShouldHealTarget(pEntity))
+		{
+			SetTarget( pEntity );
+			return SCHED_HGRUNT_MEDIC_HEAL;
 		}
 	}
 	else
@@ -490,13 +514,21 @@ int CNPC_HGrunt::SelectScheduleRetrieveItem()
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectScheduleNonCombat()
 {
-	return SCHED_NONE;
+	if (HasCondition( COND_HGRUNT_NEED_HEALING ))
+	{
+		return SCHED_HGRUNT_ASK_HEAL;
+	}
+	return BaseClass::SelectScheduleNonCombat();
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectScheduleCombat()
 {
+	if (HasCondition( COND_HGRUNT_NEED_HEALING ))
+	{
+		return SCHED_HGRUNT_COVER_HEAL;
+	}
 	return BaseClass::SelectScheduleCombat();
 }
 
@@ -508,7 +540,11 @@ bool CNPC_HGrunt::ShouldDeferToFollowBehavior()
 	if (HaveCommandGoal())
 		return false;
 #endif
-
+	// try not to follow if we need healing
+	if (HasCondition( COND_HGRUNT_NEED_HEALING ))
+	{
+		return false;
+	}
 	return BaseClass::ShouldDeferToFollowBehavior();
 }
 
@@ -612,6 +648,9 @@ void CNPC_HGrunt::StartTask( const Task_t *pTask )
 		}
 		// heal activity goes here
 		break;
+	case TASK_CALL_MEDIC:
+		// todo: add stuff here
+		break;
 
 	default:
 		BaseClass::StartTask( pTask );
@@ -662,6 +701,25 @@ void CNPC_HGrunt::RunTask( const Task_t *pTask )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetTarget()->GetAbsOrigin() );
 			// the heal function will be tied to an animevent or something similar. for now let's just heal from this task code
 			Heal();
+			TaskComplete();
+		}
+		break;
+
+	case TASK_CALL_MEDIC:
+		if (gpGlobals->curtime > m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat())
+		{
+			Warning( "MEDIC!\n" );
+			CSoundEnt::InsertSound( SOUND_MEDIC_CALL | SOUND_CONTEXT_ALLIES_ONLY, GetAbsOrigin(), 1500, sk_hgrunt_heal_call_timeout.GetFloat(), this, SOUNDENT_CHANNEL_HGRUNT_CALLS );
+			m_flLastHealCallTime = gpGlobals->curtime;
+		}
+		else if (!IsHealRequestActive())
+		{
+			Warning( "Where's the medic?\n" );
+			TaskFail( FAIL_NO_GOAL );
+			ClearCondition( COND_HGRUNT_NEED_HEALING );
+		}
+		else if (GetHealth() >= sk_hgrunt_medic_heal_threshold.GetFloat())
+		{
 			TaskComplete();
 		}
 		break;
@@ -1942,7 +2000,7 @@ CAI_BaseNPC *CNPC_HGrunt::GetSquadCommandRepresentative()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void CNPC_HGrunt::SetSquad( CAI_Squad *pSquad )
+void CNPC_HGrunt::SetSquad( CAI_HGruntSquad *pSquad )
 {
 	bool bWasInPlayerSquad = IsInPlayerSquad();
 
@@ -2123,23 +2181,59 @@ void CNPC_HGrunt::AddSquadToPlayerSquad()
 	}
 }
 
-/*bool CNPC_HGrunt::SquadHasMedic()
+void CNPC_HGrunt::AddToSquad( string_t name )
 {
-	AISquadIter_t iter;
-	for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
+	BaseClass::AddToSquad(name);
+	if (IsMedic() || IsEngineer())
 	{
-		// this doesn't work if the squad contains npcs that aren't hgrunts.
-		// todo: don't do a cast, we need something less expensive
-		CNPC_HGrunt *pHGrunt = static_cast<CNPC_HGrunt *>(pAllyNpc);
-		if (pHGrunt && pHGrunt->IsMedic())
-			return true;
+		CAI_HGruntSquad *squad = GetHGruntSquad();
+		squad->AddSpecialGrunt( this );
 	}
-	return false;
-}*/
+}
+
+void CNPC_HGrunt::RemoveFromSquad()
+{
+	if (IsMedic() || IsEngineer())
+	{
+		CAI_HGruntSquad *squad = GetHGruntSquad();
+		squad->RemoveSpecialGrunt( this );
+	}
+	BaseClass::RemoveFromSquad();
+}
+
+bool CNPC_HGrunt::IsHealRequestActive()
+{
+	return gpGlobals->curtime > m_flLastHealCallTime && gpGlobals->curtime < m_flLastHealCallTime + sk_hgrunt_heal_call_timeout.GetFloat(); 
+}
+
+bool CNPC_HGrunt::QueryHearSound(CSound *pSound)
+{
+	if (pSound->SoundContext() & SOUND_CONTEXT_ALLIES_ONLY)
+	{
+		return true;
+	}
+	return BaseClass::QueryHearSound(pSound);
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Overidden for human grunts because they  hear the medic call sound
+// Input  :
+// Output :
+//-----------------------------------------------------------------------------
+int CNPC_HGrunt::GetSoundInterests( void )
+{
+	return SOUND_MEDIC_CALL | BaseClass::GetSoundInterests();
+}
 
 // schedules
 AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	DECLARE_TASK(TASK_HGRUNT_MEDIC_HEAL)
+	DECLARE_TASK(TASK_CALL_MEDIC)
+
+	DECLARE_CONDITION(COND_HGRUNT_MEDIC_HEAL_PLAYER)
+	DECLARE_CONDITION(COND_HGRUNT_NEED_HEALING)
+	DECLARE_CONDITION(COND_HGRUNT_MEDIC_READY_TO_HEAL)
+
 	DEFINE_SCHEDULE
 	(
 		SCHED_HGRUNT_MEDIC_HEAL,
@@ -2153,4 +2247,71 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 		"	"
 		"	Interrupts"
 	)
+	DEFINE_SCHEDULE
+	(
+	SCHED_HGRUNT_ASK_HEAL,
+
+	"	Tasks"
+	"		TASK_STOP_MOVING		0"
+	"		TASK_CALL_MEDIC			0"
+	"	"
+	"	Interrupts"
+	"		COND_HEAR_DANGER"
+	"		COND_HEAR_MOVE_AWAY"
+	)
+	DEFINE_SCHEDULE
+	(
+	SCHED_HGRUNT_COVER_HEAL,
+
+	"	Tasks"
+	"		TASK_FIND_COVER_FROM_ENEMY		0"
+	"		TASK_RUN_PATH					0"
+	"		TASK_REMEMBER					MEMORY:INCOVER"
+	"		TASK_STOP_MOVING				0"
+	"		TASK_CALL_MEDIC					0"
+	"	"
+	"	Interrupts"
+	"		COND_HEAR_DANGER"
+	"		COND_HEAR_MOVE_AWAY"
+	)
 AI_END_CUSTOM_NPC()
+
+//--------------------------
+//    CAI_HGruntSquad
+//--------------------------
+BEGIN_DATADESC(CAI_HGruntSquad)
+	DEFINE_UTLVECTOR(m_Medics, FIELD_EHANDLE),
+	DEFINE_UTLVECTOR( m_Engineers, FIELD_EHANDLE ),
+END_DATADESC()
+
+void CAI_HGruntSquad::AddSpecialGrunt( CNPC_HGrunt *pHGrunt )
+{
+	if (pHGrunt->IsMedic())
+	{
+		m_Medics.AddToTail( pHGrunt );
+	}
+	else if (pHGrunt->IsEngineer())
+	{
+		m_Engineers.AddToTail( pHGrunt );
+	}
+	else
+	{
+		Warning( "Tried to add special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName());
+	}
+}
+
+void CAI_HGruntSquad::RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt )
+{
+	if (pHGrunt->IsMedic())
+	{
+		m_Medics.FindAndRemove( pHGrunt );
+	}
+	else if (pHGrunt->IsEngineer())
+	{
+		m_Engineers.FindAndRemove( pHGrunt );
+	}
+	else
+	{
+		Warning( "Tried to remove special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName() );
+	}
+}

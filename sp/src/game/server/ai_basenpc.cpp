@@ -2127,6 +2127,7 @@ void CAI_BaseNPC::OnListened()
 				case SOUND_DANGER_SNIPERONLY:/* silence warning */					break;
 				case SOUND_MOVE_AWAY:		condition = COND_HEAR_MOVE_AWAY;		break;
 				case SOUND_PLAYER_VEHICLE:	condition = COND_HEAR_PLAYER;			break;
+				case SOUND_MEDIC_CALL:		/* don't need to handle this */			break;
 
 				default:
 					DevMsg( "**ERROR: NPC %s hearing sound of unknown type %d!\n", GetClassname(), pCurrentSound->SoundType() );

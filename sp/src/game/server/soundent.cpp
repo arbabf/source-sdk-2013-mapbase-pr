@@ -91,6 +91,7 @@ bool CSound::FIsSound ( void )
 	case SOUND_PHYSICS_DANGER:
 	case SOUND_MOVE_AWAY:
 	case SOUND_PLAYER_VEHICLE:
+	case SOUND_MEDIC_CALL:
 		return true;
 
 	default:

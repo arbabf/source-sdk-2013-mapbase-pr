@@ -6,6 +6,7 @@
 //========================================================================
 
 #include "npc_playercompanion.h"
+#include "ai_squad.h"
 
 struct SquadCandidateHGrunt_t;
 
@@ -21,6 +22,25 @@ enum HGruntType_t
 //----------------------------
 #define SF_HGRUNT_JOIN_WHEN_NEARBY (1 << 16)
 #define SF_HGRUNT_NOT_COMMANDABLE (1 << 17)
+
+class CNPC_HGrunt;
+
+class CAI_HGruntSquad : public CAI_Squad
+{
+	DECLARE_CLASS( CAI_HGruntSquad, CAI_Squad );
+	DECLARE_DATADESC();
+public:
+	~CAI_HGruntSquad();
+
+	bool	SquadHasMedic( void ) { return m_Medics.Count() > 0; }
+	bool	SquadHasEngineer( void ) { return m_Engineers.Count() > 0; }
+	void	AddSpecialGrunt( CNPC_HGrunt *pHGrunt );
+	void	RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt );
+
+private:
+	CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS> m_Medics;
+	CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS> m_Engineers;
+};
 
 class CNPC_HGrunt : public CNPC_PlayerCompanion
 {
@@ -48,6 +68,7 @@ public:
 	bool			ShouldHealTarget( CBaseEntity *pTarget );
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
+	bool			IsHealRequestActive();
 
 	//---------------------------------
 	// Behavior
@@ -94,6 +115,11 @@ public:
 	virtual void	OnChangeRunningBehavior( CAI_BehaviorBase *pOldBehavior, CAI_BehaviorBase *pNewBehavior );
 
 	//---------------------------------
+	// Senses
+	//---------------------------------
+	bool			QueryHearSound( CSound *pSound );
+	int				GetSoundInterests( void );
+	//---------------------------------
 	// Commander mode
 	//---------------------------------
 	bool 			IsCommandable();
@@ -122,8 +148,12 @@ public:
 	void 			UpdateFollowCommandPoint();
 	bool			IsFollowingCommandPoint();
 	CAI_BaseNPC *	GetSquadCommandRepresentative();
-	void			SetSquad( CAI_Squad *pSquad );
+	void			SetSquad( CAI_HGruntSquad *pSquad );
 	bool			SpeakCommandResponse( AIConcept_t concept, const char *modifiers = NULL );
+
+	CAI_HGruntSquad *	GetHGruntSquad( void ) { return assert_cast<CAI_HGruntSquad *>(GetSquad()); }
+	void				AddToSquad(string_t name);
+	void				RemoveFromSquad();
 
 	//---------------------------------
 	// Combat
@@ -146,11 +176,17 @@ private:
 	{
 		COND_HGRUNT_MEDIC_HEAL_PLAYER = BaseClass::NEXT_CONDITION,
 		COND_HGRUNT_NEED_HEALING,
+		COND_HGRUNT_MEDIC_READY_TO_HEAL,
+		NEXT_CONDITION,
 
 		SCHED_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_SCHEDULE,
 		SCHED_HGRUNT_ASK_HEAL,
+		SCHED_HGRUNT_COVER_HEAL,
+		NEXT_SCHEDULE,
 
-		TASK_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_TASK
+		TASK_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_TASK,
+		TASK_CALL_MEDIC,
+		NEXT_TASK
 	};
 	int				m_iSquadRole;
 	float			m_flLastHealTime;
@@ -167,6 +203,7 @@ private:
 	int				m_iFriendlyFireCount; // how many times this npc has been friendly fired
 	float			m_flLastFriendlyFireTime;
 	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
+	float			m_flLastHealCallTime; // when we last called for a medic
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;
