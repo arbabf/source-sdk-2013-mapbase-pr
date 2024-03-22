@@ -6,7 +6,7 @@
 //========================================================================
 
 #include "npc_playercompanion.h"
-#include "ai_squad.h"
+//#include "ai_squad.h"
 
 struct SquadCandidateHGrunt_t;
 
@@ -23,6 +23,9 @@ enum HGruntType_t
 #define SF_HGRUNT_JOIN_WHEN_NEARBY (1 << 16)
 #define SF_HGRUNT_NOT_COMMANDABLE (1 << 17)
 
+// todo: either redo CAI_HGruntSquad or remove all references to it
+
+/*
 class CNPC_HGrunt;
 
 class CAI_HGruntSquad : public CAI_Squad
@@ -37,10 +40,11 @@ public:
 	void	AddSpecialGrunt( CNPC_HGrunt *pHGrunt );
 	void	RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt );
 
-private:
 	CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS> m_Medics;
 	CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS> m_Engineers;
+private:
 };
+*/
 
 class CNPC_HGrunt : public CNPC_PlayerCompanion
 {
@@ -53,12 +57,14 @@ public:
 	//---------------------------------
 	// HGrunt-specific utility functions
 	//---------------------------------
-	bool			IsMedic() { return m_iSquadRole == HGRUNT_MEDIC; }
-	bool			IsEngineer() { return m_iSquadRole == HGRUNT_ENGINEER; }
-	Class_T 		Classify() { return CLASS_PLAYER_ALLY; }
+	bool			IsMedic()					{ return m_iSquadRole == HGRUNT_MEDIC; }
+	bool			IsEngineer()				{ return m_iSquadRole == HGRUNT_ENGINEER; }
+	Class_T 		Classify()					{ return CLASS_PLAYER_ALLY; }
 	void			TurnSquadHostileToPlayer();
 	void			TurnHostileToPlayer();
 	void			AddSquadToPlayerSquad();
+	bool			SquadHasSpecial(int type);
+	int				HGruntRole()				{ return m_iSquadRole; }
 
 	//---------------------------------
 	// Healing-related functions
@@ -103,6 +109,7 @@ public:
 	void			TaskFail( AI_TaskFailureCode_t code );
 
 	void 			PickupItem( CBaseEntity *pItem );
+	bool			ShouldLookForHealthItem();
 
 	void 			SimpleUse( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
 
@@ -148,12 +155,12 @@ public:
 	void 			UpdateFollowCommandPoint();
 	bool			IsFollowingCommandPoint();
 	CAI_BaseNPC *	GetSquadCommandRepresentative();
-	void			SetSquad( CAI_HGruntSquad *pSquad );
+	void			SetSquad( CAI_Squad/*CAI_HGruntSquad*/ *pSquad );
 	bool			SpeakCommandResponse( AIConcept_t concept, const char *modifiers = NULL );
 
-	CAI_HGruntSquad *	GetHGruntSquad( void ) { return assert_cast<CAI_HGruntSquad *>(GetSquad()); }
-	void				AddToSquad(string_t name);
-	void				RemoveFromSquad();
+	//CAI_HGruntSquad *	GetHGruntSquad( void ) { return assert_cast<CAI_HGruntSquad *>(GetSquad()); }
+	//void				AddToSquad(string_t name);
+	//void				RemoveFromSquad();
 
 	//---------------------------------
 	// Combat
@@ -204,6 +211,7 @@ private:
 	float			m_flLastFriendlyFireTime;
 	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
 	float			m_flLastHealCallTime; // when we last called for a medic
+	float			m_flNextHealthSearchTime;
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;

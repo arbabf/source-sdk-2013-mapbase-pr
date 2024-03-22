@@ -64,6 +64,7 @@ DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
 DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
 DEFINE_FIELD(m_flLastFriendlyFireTime, FIELD_TIME),
 DEFINE_FIELD(m_flLastHealCallTime, FIELD_TIME),
+DEFINE_FIELD(m_flNextHealthSearchTime, FIELD_TIME),
 DEFINE_FIELD(m_hLastHealTarget, FIELD_EHANDLE),
 DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
 DEFINE_FIELD(m_iFriendlyFireCount, FIELD_INTEGER),
@@ -159,6 +160,16 @@ void CNPC_HGrunt::GatherConditions()
 		}
 	}
 
+	if (ShouldLookForHealthItem())
+	{
+		if (FindHealthItem( GetAbsOrigin(), Vector( 240, 240, 240 ) ))
+			SetCondition( COND_HEALTH_ITEM_AVAILABLE );
+		else
+			ClearCondition( COND_HEALTH_ITEM_AVAILABLE );
+
+		m_flNextHealthSearchTime = gpGlobals->curtime + 4.0;
+	}
+
 	// If the player is standing near a medic and can see the medic, 
 	// assume the player is 'staring' and wants health.
 	if (CanHeal())
@@ -187,9 +198,7 @@ void CNPC_HGrunt::GatherConditions()
 		}
 #endif
 	}
-	if (NameMatches("hgrunt_generic_3"))
-		DevMsg( "%f\n", m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() );
-	if (GetHGruntSquad()->SquadHasMedic() &&
+	if (/*GetHGruntSquad()->*/SquadHasSpecial(HGRUNT_MEDIC) &&
 		GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
 		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat())
 	{
@@ -490,9 +499,9 @@ int CNPC_HGrunt::SelectScheduleRetrieveItem()
 {
 	if (HasCondition( COND_HEALTH_ITEM_AVAILABLE ))
 	{
-		if (!IsInPlayerSquad())
+		if (!IsInSquad())
 		{
-			// Been kicked out of the player squad since the time I located the health.
+			// Been kicked out of the squad since the time I located the health.
 			ClearCondition( COND_HEALTH_ITEM_AVAILABLE );
 		}
 		else
@@ -1432,6 +1441,9 @@ void CNPC_HGrunt::AddToPlayerSquad()
 void CNPC_HGrunt::RemoveFromPlayerSquad()
 {
 	Assert( IsInPlayerSquad() );
+	if (!IsInPlayerSquad())
+		return;
+
 	Warning( "Leaving player squad!\n" );
 
 	ClearFollowTarget();
@@ -2000,7 +2012,7 @@ CAI_BaseNPC *CNPC_HGrunt::GetSquadCommandRepresentative()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void CNPC_HGrunt::SetSquad( CAI_HGruntSquad *pSquad )
+void CNPC_HGrunt::SetSquad( CAI_Squad/*CAI_HGruntSquad*/ *pSquad )
 {
 	bool bWasInPlayerSquad = IsInPlayerSquad();
 
@@ -2181,25 +2193,30 @@ void CNPC_HGrunt::AddSquadToPlayerSquad()
 	}
 }
 
-void CNPC_HGrunt::AddToSquad( string_t name )
-{
-	BaseClass::AddToSquad(name);
-	if (IsMedic() || IsEngineer())
-	{
-		CAI_HGruntSquad *squad = GetHGruntSquad();
-		squad->AddSpecialGrunt( this );
-	}
-}
+//void CNPC_HGrunt::AddToSquad( string_t name )
+//{
+//	BaseClass::AddToSquad(name);
+//	if (IsMedic() || IsEngineer())
+//	{
+//		CAI_HGruntSquad *squad = GetHGruntSquad();
+//		if (!&squad->m_Engineers || !&squad->m_Medics)
+//		{
+//			squad->m_Medics = *new CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS>;
+//			squad->m_Engineers = *new CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS>;
+//		}
+//		squad->AddSpecialGrunt( this );
+//	}
+//}
 
-void CNPC_HGrunt::RemoveFromSquad()
-{
-	if (IsMedic() || IsEngineer())
-	{
-		CAI_HGruntSquad *squad = GetHGruntSquad();
-		squad->RemoveSpecialGrunt( this );
-	}
-	BaseClass::RemoveFromSquad();
-}
+//void CNPC_HGrunt::RemoveFromSquad()
+//{
+//	BaseClass::RemoveFromSquad();
+//	if (IsMedic() || IsEngineer())
+//	{
+//		CAI_HGruntSquad *squad = GetHGruntSquad();
+//		squad->RemoveSpecialGrunt( this );
+//	}
+//}
 
 bool CNPC_HGrunt::IsHealRequestActive()
 {
@@ -2216,13 +2233,53 @@ bool CNPC_HGrunt::QueryHearSound(CSound *pSound)
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Overidden for human grunts because they  hear the medic call sound
+// Purpose: Overidden for human grunts because they hear the medic call sound
 // Input  :
 // Output :
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::GetSoundInterests( void )
 {
 	return SOUND_MEDIC_CALL | BaseClass::GetSoundInterests();
+}
+
+bool CNPC_HGrunt::SquadHasSpecial(int type)
+{
+	AISquadIter_t iter;
+	for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
+	{
+		CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
+		if (pHGrunt && pHGrunt->HGruntRole() == type)
+			return true;
+	}
+	return false;
+}
+
+bool CNPC_HGrunt::ShouldLookForHealthItem()
+{
+	// Definitely do not take health if not in a squad.
+	if (!IsInSquad())
+		return false;
+
+	// defer pickups to medics if we have a medic in our squad since they'll get more use out of them
+	if (!IsMedic() && SquadHasSpecial( HGRUNT_MEDIC ))
+		return false;
+
+	if (gpGlobals->curtime < m_flNextHealthSearchTime)
+		return false;
+
+	// I'm fully healthy and have max heal charge.
+	if (GetHealth() >= GetMaxHealth() && m_iHealCharge >= sk_hgrunt_medic_max_heal_charge.GetInt())
+		return false;
+
+	// Player is dangerously hurt, don't steal his health.
+	if (AI_IsSinglePlayer() && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.25f)
+		return false;
+
+	// Wait till you're standing still.
+	if (IsMoving())
+		return false;
+
+	return true;
 }
 
 // schedules
@@ -2276,42 +2333,60 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	)
 AI_END_CUSTOM_NPC()
 
-//--------------------------
-//    CAI_HGruntSquad
-//--------------------------
-BEGIN_DATADESC(CAI_HGruntSquad)
-	DEFINE_UTLVECTOR(m_Medics, FIELD_EHANDLE),
-	DEFINE_UTLVECTOR( m_Engineers, FIELD_EHANDLE ),
-END_DATADESC()
-
-void CAI_HGruntSquad::AddSpecialGrunt( CNPC_HGrunt *pHGrunt )
-{
-	if (pHGrunt->IsMedic())
-	{
-		m_Medics.AddToTail( pHGrunt );
-	}
-	else if (pHGrunt->IsEngineer())
-	{
-		m_Engineers.AddToTail( pHGrunt );
-	}
-	else
-	{
-		Warning( "Tried to add special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName());
-	}
-}
-
-void CAI_HGruntSquad::RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt )
-{
-	if (pHGrunt->IsMedic())
-	{
-		m_Medics.FindAndRemove( pHGrunt );
-	}
-	else if (pHGrunt->IsEngineer())
-	{
-		m_Engineers.FindAndRemove( pHGrunt );
-	}
-	else
-	{
-		Warning( "Tried to remove special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName() );
-	}
-}
+////--------------------------
+////    CAI_HGruntSquad
+////--------------------------
+//BEGIN_DATADESC(CAI_HGruntSquad)
+//	DEFINE_UTLVECTOR(m_Medics, FIELD_EHANDLE),
+//	DEFINE_UTLVECTOR( m_Engineers, FIELD_EHANDLE ),
+//END_DATADESC()
+//
+////CAI_HGruntSquad::CAI_HGruntSquad()
+////{
+////	
+////}
+////
+////CAI_HGruntSquad::~CAI_HGruntSquad()
+////{
+////
+////}
+//
+//void CAI_HGruntSquad::AddSpecialGrunt( CNPC_HGrunt *pHGrunt )
+//{
+//	if (!pHGrunt)
+//		return;
+//
+//	if (pHGrunt->IsMedic())
+//	{
+//		m_Medics.AddToTail( pHGrunt );
+//	}
+//	else if (pHGrunt->IsEngineer())
+//	{
+//		m_Engineers.AddToTail( pHGrunt );
+//	}
+//	else
+//	{
+//		Warning( "Tried to add special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName());
+//	}
+//}
+//
+//void CAI_HGruntSquad::RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt )
+//{
+//	if (!pHGrunt)
+//		return;
+//
+//	if (pHGrunt->IsMedic())
+//	{
+//		m_Medics.FindAndRemove( pHGrunt );
+//		Warning( "Medic removed!" );
+//	}
+//	else if (pHGrunt->IsEngineer())
+//	{
+//		m_Engineers.FindAndRemove( pHGrunt );
+//		Warning( "Engineer removed!" );
+//	}
+//	else
+//	{
+//		Warning( "Tried to remove special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName() );
+//	}
+//}
