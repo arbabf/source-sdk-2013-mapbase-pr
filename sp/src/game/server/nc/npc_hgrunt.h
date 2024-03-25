@@ -74,6 +74,7 @@ public:
 	bool			ShouldHealTarget( CBaseEntity *pTarget );
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
+	void			InputSetHealCharge(inputdata_t &inputdata);
 	bool			IsHealRequestActive();
 
 	//---------------------------------
@@ -183,7 +184,6 @@ private:
 	{
 		COND_HGRUNT_MEDIC_HEAL_PLAYER = BaseClass::NEXT_CONDITION,
 		COND_HGRUNT_NEED_HEALING,
-		COND_HGRUNT_MEDIC_READY_TO_HEAL,
 		NEXT_CONDITION,
 
 		SCHED_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_SCHEDULE,
@@ -212,6 +212,7 @@ private:
 	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
 	float			m_flLastHealCallTime; // when we last called for a medic
 	float			m_flNextHealthSearchTime;
+	bool			m_bAwaitingMedic;
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;

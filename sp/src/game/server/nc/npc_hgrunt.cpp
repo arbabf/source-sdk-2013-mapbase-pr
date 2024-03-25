@@ -59,6 +59,9 @@ LINK_ENTITY_TO_CLASS( npc_hgrunt, CNPC_HGrunt );
 BEGIN_DATADESC( CNPC_HGrunt )
 DEFINE_KEYFIELD(m_iSquadRole, FIELD_INTEGER, "squadrole"),
 DEFINE_KEYFIELD( m_bNeverLeavePlayerSquad, FIELD_BOOLEAN, "neverleaveplayersquad" ),
+
+DEFINE_INPUTFUNC(FIELD_VOID, "SetHealCharge", InputSetHealCharge),
+
 DEFINE_FIELD(m_flLastHealTime, FIELD_TIME),
 DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
 DEFINE_FIELD( m_flTimeJoinedPlayerSquad, FIELD_TIME ),
@@ -70,18 +73,14 @@ DEFINE_FIELD(m_iHealCharge, FIELD_INTEGER),
 DEFINE_FIELD(m_iFriendlyFireCount, FIELD_INTEGER),
 DEFINE_FIELD( m_bWasInPlayerSquad, FIELD_BOOLEAN ),
 DEFINE_FIELD(m_bRemovedFromPlayerSquad, FIELD_BOOLEAN),
+DEFINE_FIELD(m_bAwaitingMedic, FIELD_BOOLEAN),
 DEFINE_FIELD( m_vAutoSummonAnchor, FIELD_POSITION_VECTOR ),
 DEFINE_FIELD( m_iszOriginalSquad, FIELD_STRING ),
+
 DEFINE_EMBEDDED( m_AutoSummonTimer ),
 END_DATADESC()
 
 CSimpleSimTimer CNPC_HGrunt::gm_PlayerSquadEvaluateTimer;
-
-// heal todos:	keep an hgrunt waiting if a medic is attending but not with them yet
-//				deny request for heal if a medic has no heals
-//				medic call other medics
-//				multiple medics attending to one guy
-//				timer fucks up if you restart the map
 
 void CNPC_HGrunt::Spawn( void )
 {
@@ -459,28 +458,15 @@ int CNPC_HGrunt::SelectScheduleHeal()
 				}
 			}
 		}
-			/*float distClosestSq = HGRUNT_HEAL_RANGE*HGRUNT_HEAL_RANGE;
-			float distCurSq; */
-			/*AISquadIter_t iter;
-			CAI_BaseNPC *pSquadmate = m_pSquad->GetFirstMember( &iter );
-			while (pSquadmate)
-			{
-				if (pSquadmate != this)
-				{
-					distCurSq = (GetAbsOrigin() - pSquadmate->GetAbsOrigin()).LengthSqr();
-					if (distCurSq < distClosestSq && ShouldHealTarget( pSquadmate ))
-					{
-						distClosestSq = distCurSq;
-						pEntity = pSquadmate;
-					}
-				}
-
-				pSquadmate = m_pSquad->GetNextMember( &iter );
-			}*/
 
 		if (pEntity && ShouldHealTarget(pEntity))
 		{
 			SetTarget( pEntity );
+			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pEntity);
+			if (pHGrunt)
+			{
+				pHGrunt->m_bAwaitingMedic = true;
+			}
 			return SCHED_HGRUNT_MEDIC_HEAL;
 		}
 	}
@@ -506,7 +492,13 @@ int CNPC_HGrunt::SelectScheduleRetrieveItem()
 		}
 		else
 		{
-			CBaseEntity *pBase = FindHealthItem( m_FollowBehavior.GetFollowTarget()->GetAbsOrigin(), Vector( 120, 120, 120 ) );
+			CBaseEntity *pBase;
+
+			if (m_FollowBehavior.GetFollowTarget())
+				pBase = FindHealthItem( m_FollowBehavior.GetFollowTarget()->GetAbsOrigin(), Vector( 120, 120, 120 ) );
+			else
+				pBase = FindHealthItem( GetAbsOrigin(), Vector( 120, 120, 120 ) );
+
 			CItem *pItem = dynamic_cast<CItem *>(pBase);
 
 			if (pItem)
@@ -657,9 +649,38 @@ void CNPC_HGrunt::StartTask( const Task_t *pTask )
 		}
 		// heal activity goes here
 		break;
+
 	case TASK_CALL_MEDIC:
 		// todo: add stuff here
 		break;
+
+	case TASK_ITEM_PICKUP:
+	{
+		// override base npc pickup *for now* because the animation doesn't exist
+
+		CBaseEntity *pPickup = NULL;
+		// Pick up the weapon or item that was found earlier and cached in our target pointer.
+		pPickup = GetTarget();
+
+		// Make sure we found something to pick up.
+		if (!pPickup)
+		{
+			TaskFail( FAIL_NO_TARGET );
+			break;
+		}
+
+		// Make sure the item hasn't moved.
+		float flDist = (pPickup->WorldSpaceCenter() - GetAbsOrigin()).Length2D();
+		if (flDist > ITEM_PICKUP_TOLERANCE)
+		{
+			TaskFail( FAIL_NO_TARGET );
+			break;
+		}
+
+		PickupItem( pPickup );
+		TaskComplete();
+		break;
+	}
 
 	default:
 		BaseClass::StartTask( pTask );
@@ -749,6 +770,12 @@ void CNPC_HGrunt::TaskFail( AI_TaskFailureCode_t code )
 	if (IsCurSchedule( SCHED_HGRUNT_MEDIC_HEAL ))
 	{
 		m_flLastHealTime = gpGlobals->curtime + sk_hgrunt_medic_heal_cooldown.GetFloat() * 0.1f;
+		if (GetTarget() && !GetTarget()->IsPlayer())
+		{
+			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(GetTarget());
+			pHGrunt->m_bAwaitingMedic = false;
+		}
+		
 	}
 
 	// TODO: remove this
@@ -924,13 +951,13 @@ bool CNPC_HGrunt::CanHeal()
 
 	if (gpGlobals->curtime < m_flLastHealTime + sk_hgrunt_medic_heal_cooldown.GetFloat())
 	{
-		Warning( "Recharging heals...\n" );
+		//Warning( "Recharging heals...\n" );
 		return false;
 	}
 
 	if (m_iHealCharge <= 0)
 	{
-		Warning( "I have no heal charge!\n" );
+		//Warning( "I have no heal charge!\n" );
 		return false;
 	}
 
@@ -939,12 +966,20 @@ bool CNPC_HGrunt::CanHeal()
 
 void CNPC_HGrunt::Heal()
 {
-	int hpTaken = GetTarget()->TakeHealth( sk_hgrunt_medic_heal_amount.GetFloat(), DMG_GENERIC );
+	int hpDifference = GetTarget()->GetMaxHealth() - GetTarget()->GetHealth();
+	int hpTaken = 0;
+
+	if (m_iHealCharge >= hpDifference)
+		hpTaken = GetTarget()->TakeHealth( sk_hgrunt_medic_heal_amount.GetFloat(), DMG_GENERIC );
+	else
+		hpTaken = GetTarget()->TakeHealth( m_iHealCharge, DMG_GENERIC );
+
 	if (hpTaken == 0)
 	{
 		Warning( "Heal target was unable to be healed!\n" );
 		return;
 	}
+
 	GetTarget()->RemoveAllDecals();
 	RemoveHealCharge( hpTaken );
 	m_hLastHealTarget = GetTarget();
@@ -954,6 +989,11 @@ void CNPC_HGrunt::Heal()
 	{
 		CPASAttenuationFilter filter( GetTarget(), "HealthKit.Touch" );
 		EmitSound( filter, GetTarget()->entindex(), "HealthKit.Touch" );
+	}
+	else
+	{
+		CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(GetTarget());
+		pHGrunt->m_bAwaitingMedic = false;
 	}
 }
 
@@ -977,7 +1017,16 @@ bool CNPC_HGrunt::ShouldHealTarget( CBaseEntity *pTarget )
 	{
 		return false;
 	}
-		
+	
+	// make sure a medic isn't attending to them already
+	if (!pTarget->IsPlayer())
+	{
+		CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pTarget);
+		if (pHGrunt->m_bAwaitingMedic)
+		{
+			return false;
+		}
+	}
 
 	return true;
 }
@@ -992,6 +1041,7 @@ void CNPC_HGrunt::AddHealCharge( int charge )
 	{
 		m_iHealCharge += charge;
 	}
+	DevMsg( "Current heal charge: %d\n", m_iHealCharge );
 }
 
 void CNPC_HGrunt::RemoveHealCharge( int charge )
@@ -1004,6 +1054,7 @@ void CNPC_HGrunt::RemoveHealCharge( int charge )
 	{
 		m_iHealCharge -= charge;
 	}
+	DevMsg( "Current heal charge: %d\n", m_iHealCharge );
 }
 
 //-----------------------------------------------------------------------------
@@ -1558,9 +1609,6 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 
 	// Autosquadding
 	const float JOIN_PLAYER_XY_TOLERANCE_SQ = Square( 36 * 12 );
-	//const float UNCONDITIONAL_JOIN_PLAYER_XY_TOLERANCE_SQ = Square( 12 * 12 );
-	//const float UNCONDITIONAL_JOIN_PLAYER_Z_TOLERANCE = 5 * 12;
-	//const float SECOND_TIER_JOIN_DIST_SQ = Square( 48 * 12 );
 	if (pPlayer && ShouldAutosquad() && !(pPlayer->GetFlags() & FL_NOTARGET) && pPlayer->IsAlive())
 	{
 		const Vector &vPlayerPos = pPlayer->GetAbsOrigin();
@@ -1572,185 +1620,6 @@ void CNPC_HGrunt::UpdatePlayerSquad()
 				AddSquadToPlayerSquad();
 			}
 		}
-		/*
-		CAI_BaseNPC **ppAIs = g_AI_Manager.AccessAIs();
-		CUtlVector<SquadCandidateHGrunt_t> candidates;
-		const Vector &vPlayerPos = pPlayer->GetAbsOrigin();
-		bool bFoundNewGuy = false;
-		int i;
-
-		for (i = 0; i < g_AI_Manager.NumAIs(); i++)
-		{
-			if (ppAIs[i]->GetState() == NPC_STATE_DEAD)
-				continue;
-
-			if (ppAIs[i]->GetClassname() != GetClassname())
-				continue;
-
-			CNPC_HGrunt *pHGrunt = assert_cast<CNPC_HGrunt *>(ppAIs[i]);
-			int iNew;
-
-			if (pHGrunt->IsInPlayerSquad())
-			{
-				iNew = candidates.AddToTail();
-				candidates[iNew].pHGrunt = pHGrunt;
-				candidates[iNew].bIsInSquad = true;
-				candidates[iNew].distSq = 0;
-				candidates[iNew].iSquadIndex = pHGrunt->GetSquad()->GetSquadIndex( pHGrunt );
-			}
-			else
-			{
-				float distSq = (vPlayerPos.AsVector2D() - pHGrunt->GetAbsOrigin().AsVector2D()).LengthSqr();
-				if (distSq > JOIN_PLAYER_XY_TOLERANCE_SQ &&
-					(pHGrunt->m_flTimeJoinedPlayerSquad == 0 || gpGlobals->curtime - pHGrunt->m_flTimeJoinedPlayerSquad > 60.0) &&
-					(pHGrunt->m_flTimeLastCloseToPlayer == 0 || gpGlobals->curtime - pHGrunt->m_flTimeLastCloseToPlayer > 15.0))
-					continue;
-
-				if (!pHGrunt->CanJoinPlayerSquad())
-					continue;
-
-				bool bShouldAdd = false;
-
-				if (pHGrunt->HasCondition( COND_SEE_PLAYER ))
-					bShouldAdd = true;
-				else
-				{
-					bool bPlayerVisible = pHGrunt->FVisible( pPlayer );
-					if (bPlayerVisible)
-					{
-						if (pHGrunt->HasCondition( COND_HEAR_PLAYER ))
-							bShouldAdd = true;
-						else if (distSq < UNCONDITIONAL_JOIN_PLAYER_XY_TOLERANCE_SQ && fabsf( vPlayerPos.z - pHGrunt->GetAbsOrigin().z ) < UNCONDITIONAL_JOIN_PLAYER_Z_TOLERANCE)
-							bShouldAdd = true;
-					}
-				}
-
-				if (bShouldAdd)
-				{
-					// @TODO (toml 05-25-04): probably everyone in a squad should be a candidate if one of them sees the player
-					AI_Waypoint_t *pPathToPlayer = pHGrunt->GetPathfinder()->BuildRoute( pHGrunt->GetAbsOrigin(), vPlayerPos, pPlayer, 5 * 12, NAV_NONE, true );
-					GetPathfinder()->UnlockRouteNodes( pPathToPlayer );
-
-					if (!pPathToPlayer)
-						continue;
-
-					CAI_Path tempPath;
-					tempPath.SetWaypoints( pPathToPlayer ); // path object will delete waypoints
-
-					iNew = candidates.AddToTail();
-					candidates[iNew].pHGrunt = pHGrunt;
-					candidates[iNew].bIsInSquad = false;
-					candidates[iNew].distSq = distSq;
-					candidates[iNew].iSquadIndex = -1;
-
-					bFoundNewGuy = true;
-				}
-			}
-		}
-
-		if (bFoundNewGuy)
-		{
-			// Look for second order guys
-			int initialCount = candidates.Count();
-			for (i = 0; i < initialCount; i++)
-				candidates[i].pHGrunt->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE ); // Prevents double-add
-			for (i = 0; i < initialCount; i++)
-			{
-				if (candidates[i].iSquadIndex == -1)
-				{
-					for (int j = 0; j < g_AI_Manager.NumAIs(); j++)
-					{
-						if (ppAIs[j]->GetState() == NPC_STATE_DEAD)
-							continue;
-
-						if (ppAIs[j]->GetClassname() != GetClassname())
-							continue;
-
-						if (ppAIs[j]->HasSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE ))
-							continue;
-
-						CNPC_HGrunt *pHGrunt = assert_cast<CNPC_HGrunt *>(ppAIs[j]);
-
-						float distSq = (vPlayerPos - pHGrunt->GetAbsOrigin()).Length2DSqr();
-						if (distSq > JOIN_PLAYER_XY_TOLERANCE_SQ)
-							continue;
-
-						distSq = (candidates[i].pHGrunt->GetAbsOrigin() - pHGrunt->GetAbsOrigin()).Length2DSqr();
-						if (distSq > SECOND_TIER_JOIN_DIST_SQ)
-							continue;
-
-						if (!pHGrunt->CanJoinPlayerSquad())
-							continue;
-
-						if (!pHGrunt->FVisible( pPlayer ))
-							continue;
-
-						int iNew = candidates.AddToTail();
-						candidates[iNew].pHGrunt = pHGrunt;
-						candidates[iNew].bIsInSquad = false;
-						candidates[iNew].distSq = distSq;
-						candidates[iNew].iSquadIndex = -1;
-						pHGrunt->AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE ); // Prevents double-add
-					}
-				}
-			}
-			for (i = 0; i < candidates.Count(); i++)
-				candidates[i].pHGrunt->RemoveSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-
-			if (candidates.Count() > MAX_PLAYER_SQUAD)
-			{
-				candidates.Sort( PlayerSquadCandidateSortFunc );
-
-				for (i = MAX_PLAYER_SQUAD; i < candidates.Count(); i++)
-				{
-					if (candidates[i].pHGrunt->IsInPlayerSquad())
-					{
-						candidates[i].pHGrunt->RemoveFromPlayerSquad();
-					}
-				}
-			}
-
-			if (candidates.Count())
-			{
-				CNPC_HGrunt *pClosest = NULL;
-				float closestDistSq = FLT_MAX;
-				int nJoined = 0;
-
-				for (i = 0; i < candidates.Count() && i < MAX_PLAYER_SQUAD; i++)
-				{
-					if (!candidates[i].pHGrunt->IsInPlayerSquad())
-					{
-						candidates[i].pHGrunt->AddToPlayerSquad();
-						nJoined++;
-
-						if (candidates[i].distSq < closestDistSq)
-						{
-							pClosest = candidates[i].pHGrunt;
-							closestDistSq = candidates[i].distSq;
-						}
-					}
-				}
-
-				// todo: speaking
-				//if (pClosest)
-				//{
-				//	if (!pClosest->SpokeConcept( TLK_JOINPLAYER ))
-				//	{
-				//		pClosest->SpeakCommandResponse( TLK_JOINPLAYER, CFmtStr( "numjoining:%d", nJoined ) );
-				//	}
-				//	else
-				//	{
-				//		pClosest->SpeakCommandResponse( TLK_STARTFOLLOW );
-				//	}
-
-				//	for (i = 0; i < candidates.Count() && i < MAX_PLAYER_SQUAD; i++)
-				//	{
-				//		candidates[i].pHGrunt->SetSpokeConcept( TLK_JOINPLAYER, NULL );
-				//	}
-				//}
-			}
-		}
-		*/
 	}
 }
 
@@ -2044,7 +1913,6 @@ bool CNPC_HGrunt::PassesDamageFilter( const CTakeDamageInfo &info )
 //-----------------------------------------------------------------
 int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 {
-	// todo: more tolerance i think
 	CBasePlayer *pPlayer = AI_GetSinglePlayer();
 	if (info.GetAttacker() == pPlayer && IRelationType(UTIL_GetLocalPlayer()) == D_LI)
 	{
@@ -2118,6 +1986,16 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 					}
 				}
 			}
+		}
+	}
+
+	// tell our heal target we won't be coming
+	if (info.GetDamage() >= GetHealth() && IsCurSchedule( SCHED_HGRUNT_MEDIC_HEAL ))
+	{
+		if (GetTarget() && !GetTarget()->IsPlayer())
+		{
+			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(GetTarget());
+			pHGrunt->m_bAwaitingMedic = false;
 		}
 	}
 
@@ -2220,7 +2098,16 @@ void CNPC_HGrunt::AddSquadToPlayerSquad()
 
 bool CNPC_HGrunt::IsHealRequestActive()
 {
-	return gpGlobals->curtime > m_flLastHealCallTime && gpGlobals->curtime < m_flLastHealCallTime + sk_hgrunt_heal_call_timeout.GetFloat(); 
+	if (gpGlobals->curtime >= m_flLastHealCallTime)
+	{
+		// wait a little longer if we know a medic's coming
+		if (m_bAwaitingMedic)
+		{
+			return gpGlobals->curtime <= m_flLastHealCallTime + (sk_hgrunt_heal_call_timeout.GetFloat() * 2);
+		}
+		return gpGlobals->curtime <= m_flLastHealCallTime + sk_hgrunt_heal_call_timeout.GetFloat();
+	}
+	return false;
 }
 
 bool CNPC_HGrunt::QueryHearSound(CSound *pSound)
@@ -2244,6 +2131,7 @@ int CNPC_HGrunt::GetSoundInterests( void )
 
 bool CNPC_HGrunt::SquadHasSpecial(int type)
 {
+	// todo: this code sucks and there should be a better, non-crashy way of seamlessly integrating it with the existing squad system
 	AISquadIter_t iter;
 	for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
 	{
@@ -2260,26 +2148,55 @@ bool CNPC_HGrunt::ShouldLookForHealthItem()
 	if (!IsInSquad())
 		return false;
 
-	// defer pickups to medics if we have a medic in our squad since they'll get more use out of them
-	if (!IsMedic() && SquadHasSpecial( HGRUNT_MEDIC ))
-		return false;
-
 	if (gpGlobals->curtime < m_flNextHealthSearchTime)
 		return false;
 
-	// I'm fully healthy and have max heal charge.
-	if (GetHealth() >= GetMaxHealth() && m_iHealCharge >= sk_hgrunt_medic_max_heal_charge.GetInt())
+	bool bHasMedic = SquadHasSpecial( HGRUNT_MEDIC );
+
+	// defer pickups to medics if we have a medic in our squad since they'll get more use out of them
+	if (!IsMedic() && bHasMedic)
 		return false;
 
-	// Player is dangerously hurt, don't steal his health.
-	if (AI_IsSinglePlayer() && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.25f)
-		return false;
+	// I'm fully healthy.
+	if (GetHealth() >= GetMaxHealth())
+	{
+		// if i'm a medic, i have near-max heal charge
+		if (IsMedic() && m_iHealCharge >= sk_hgrunt_medic_max_heal_charge.GetInt() - sk_hgrunt_medic_heal_amount.GetInt())
+			return false;
+		else if (!IsMedic())
+			return false;
+	}
+		
+
+	// Player is hurt, don't steal his health.
+	if (AI_IsSinglePlayer())
+	{
+		// if the squad has a medic, don't steal health if our player is dangerously hurt
+		if (bHasMedic && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.25f)
+			return false;
+
+		// if not, then don't steal health if the player is slightly hurt
+		if (!bHasMedic && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.75f)
+			return false;
+	}
 
 	// Wait till you're standing still.
 	if (IsMoving())
 		return false;
 
 	return true;
+}
+
+void CNPC_HGrunt::InputSetHealCharge( inputdata_t &inputdata )
+{
+	if (IsMedic())
+	{
+		m_iHealCharge = clamp( inputdata.value.Int(), 0, sk_hgrunt_medic_max_heal_charge.GetInt() );
+	}
+	else
+	{
+		Warning( "SetHealCharge input given to an HGrunt who isn't a medic!\n" );
+	}
 }
 
 // schedules
@@ -2289,7 +2206,6 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 
 	DECLARE_CONDITION(COND_HGRUNT_MEDIC_HEAL_PLAYER)
 	DECLARE_CONDITION(COND_HGRUNT_NEED_HEALING)
-	DECLARE_CONDITION(COND_HGRUNT_MEDIC_READY_TO_HEAL)
 
 	DEFINE_SCHEDULE
 	(
@@ -2313,6 +2229,7 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	"		TASK_CALL_MEDIC			0"
 	"	"
 	"	Interrupts"
+	"		COND_LIGHT_DAMAGE"
 	"		COND_HEAR_DANGER"
 	"		COND_HEAR_MOVE_AWAY"
 	)
@@ -2328,6 +2245,7 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	"		TASK_CALL_MEDIC					0"
 	"	"
 	"	Interrupts"
+	"		COND_LIGHT_DAMAGE"
 	"		COND_HEAR_DANGER"
 	"		COND_HEAR_MOVE_AWAY"
 	)
