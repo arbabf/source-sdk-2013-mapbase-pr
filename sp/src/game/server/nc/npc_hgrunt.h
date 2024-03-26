@@ -74,7 +74,7 @@ public:
 	bool			ShouldHealTarget( CBaseEntity *pTarget );
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
-	void			InputSetHealCharge(inputdata_t &inputdata);
+	void			InputSetHealCharge(inputdata_t &inputdata); // todo: fix
 	bool			IsHealRequestActive();
 
 	//---------------------------------

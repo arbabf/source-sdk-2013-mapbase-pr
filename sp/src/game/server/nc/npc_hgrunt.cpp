@@ -197,9 +197,9 @@ void CNPC_HGrunt::GatherConditions()
 		}
 #endif
 	}
-	if (/*GetHGruntSquad()->*/SquadHasSpecial(HGRUNT_MEDIC) &&
-		GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
-		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat())
+	if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
+		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() &&
+		/*GetHGruntSquad()->*/SquadHasSpecial( HGRUNT_MEDIC ))
 	{
 		SetCondition( COND_HGRUNT_NEED_HEALING );
 	}
@@ -459,7 +459,7 @@ int CNPC_HGrunt::SelectScheduleHeal()
 			}
 		}
 
-		if (pEntity && ShouldHealTarget(pEntity))
+		if (pEntity)
 		{
 			SetTarget( pEntity );
 			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pEntity);
@@ -999,6 +999,10 @@ void CNPC_HGrunt::Heal()
 
 bool CNPC_HGrunt::ShouldHealTarget( CBaseEntity *pTarget )
 {
+	// don't heal myself
+	if (pTarget == this)
+		return false;
+
 	// heal my target if i'm friendly to them
 	if (IRelationType( pTarget ) != D_LI)
 		return false;
@@ -2136,7 +2140,7 @@ bool CNPC_HGrunt::SquadHasSpecial(int type)
 	for (CAI_BaseNPC *pAllyNpc = GetSquad()->GetFirstMember( &iter ); pAllyNpc; pAllyNpc = GetSquad()->GetNextMember( &iter ))
 	{
 		CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(pAllyNpc);
-		if (pHGrunt && pHGrunt->HGruntRole() == type)
+		if (pHGrunt && pHGrunt != this && pHGrunt->HGruntRole() == type) // skip ourselves since we can tell if we're a special grunt
 			return true;
 	}
 	return false;
@@ -2151,16 +2155,14 @@ bool CNPC_HGrunt::ShouldLookForHealthItem()
 	if (gpGlobals->curtime < m_flNextHealthSearchTime)
 		return false;
 
-	bool bHasMedic = SquadHasSpecial( HGRUNT_MEDIC );
-
 	// defer pickups to medics if we have a medic in our squad since they'll get more use out of them
-	if (!IsMedic() && bHasMedic)
+	if (!IsMedic() && SquadHasSpecial( HGRUNT_MEDIC ))
 		return false;
 
 	// I'm fully healthy.
 	if (GetHealth() >= GetMaxHealth())
 	{
-		// if i'm a medic, i have near-max heal charge
+		// if i'm a medic, do i have near-max heal charge?
 		if (IsMedic() && m_iHealCharge >= sk_hgrunt_medic_max_heal_charge.GetInt() - sk_hgrunt_medic_heal_amount.GetInt())
 			return false;
 		else if (!IsMedic())
@@ -2171,12 +2173,12 @@ bool CNPC_HGrunt::ShouldLookForHealthItem()
 	// Player is hurt, don't steal his health.
 	if (AI_IsSinglePlayer())
 	{
-		// if the squad has a medic, don't steal health if our player is dangerously hurt
-		if (bHasMedic && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.25f)
+		// if we're a medic, don't steal health if our player is hurt
+		if (IsMedic() && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.4f)
 			return false;
 
 		// if not, then don't steal health if the player is slightly hurt
-		if (!bHasMedic && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.75f)
+		if (!IsMedic() && UTIL_GetLocalPlayer()->GetHealth() <= UTIL_GetLocalPlayer()->GetHealth() * 0.75f)
 			return false;
 	}
 
