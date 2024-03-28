@@ -53,13 +53,16 @@ class CNPC_HGrunt : public CNPC_PlayerCompanion
 
 public:
 	virtual void	Spawn();
+	virtual void	PostNPCInit();
+	void			OnRestore();
+	Class_T 		Classify()					{ return CLASS_PLAYER_ALLY; }
+	bool			ShouldAlwaysThink();
 
 	//---------------------------------
 	// HGrunt-specific utility functions
 	//---------------------------------
 	bool			IsMedic()					{ return m_iSquadRole == HGRUNT_MEDIC; }
 	bool			IsEngineer()				{ return m_iSquadRole == HGRUNT_ENGINEER; }
-	Class_T 		Classify()					{ return CLASS_PLAYER_ALLY; }
 	void			TurnSquadHostileToPlayer();
 	void			TurnHostileToPlayer();
 	void			AddSquadToPlayerSquad();
@@ -74,7 +77,6 @@ public:
 	bool			ShouldHealTarget( CBaseEntity *pTarget );
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
-	void			InputSetHealCharge(inputdata_t &inputdata); // todo: fix
 	bool			IsHealRequestActive();
 
 	//---------------------------------
@@ -177,8 +179,12 @@ public:
 	int 			OnTakeDamage_Alive( const CTakeDamageInfo &info );
 	virtual bool	PassesDamageFilter( const CTakeDamageInfo &info );
 
+	//---------------------------------
+	// Input/output functions
+	//---------------------------------
 	// todo: input/output funcs
-
+	void			InputSetHealCharge( inputdata_t &inputdata ); // todo: fix
+	void			InputSetCommandable( inputdata_t &inputdata );
 private:
 	enum
 	{
@@ -217,3 +223,19 @@ private:
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;
 };
+
+//---------------------------------------------------------
+//---------------------------------------------------------
+inline bool CNPC_HGrunt::NearCommandGoal()
+{
+	const float flDistSqr = COMMAND_GOAL_TOLERANCE * COMMAND_GOAL_TOLERANCE;
+	return ((GetAbsOrigin() - GetCommandGoal()).LengthSqr() <= flDistSqr);
+}
+
+//---------------------------------------------------------
+//---------------------------------------------------------
+inline bool CNPC_HGrunt::VeryFarFromCommandGoal()
+{
+	const float flDistSqr = (12 * 50) * (12 * 50);
+	return ((GetAbsOrigin() - GetCommandGoal()).LengthSqr() > flDistSqr);
+}

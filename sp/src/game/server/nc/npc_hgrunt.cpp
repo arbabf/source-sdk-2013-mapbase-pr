@@ -33,7 +33,7 @@ extern ConVar player_squad_autosummon_time_after_combat;
 extern ConVar player_squad_autosummon_time;
 extern ConVar player_squad_autosummon_move_tolerance;
 
-const int MAX_PLAYER_SQUAD = 8;
+const int MAX_PLAYER_SQUAD = 16;
 
 ConVar sk_hgrunt_health( "sk_hgrunt_health", "60" );
 ConVar sk_hgrunt_medic_heal_amount( "sk_hgrunt_medic_heal_amount", "40" ); // how much to heal the target for
@@ -114,6 +114,41 @@ void CNPC_HGrunt::Spawn( void )
 	NPCInit();
 
 	SetUse( &CNPC_HGrunt::CommanderUse );
+}
+
+void CNPC_HGrunt::PostNPCInit()
+{
+	if (!gEntList.FindEntityByClassname( NULL, COMMAND_POINT_CLASSNAME ))
+	{
+		CreateEntityByName( COMMAND_POINT_CLASSNAME );
+	}
+
+	if (IsInPlayerSquad())
+	{
+		if (m_pSquad->NumMembers() > MAX_PLAYER_SQUAD)
+			DevMsg( "Error: Spawning hgrunt in player squad but exceeds squad limit of %d members\n", MAX_PLAYER_SQUAD );
+
+		FixupPlayerSquad();
+	}
+
+	BaseClass::PostNPCInit();
+}
+
+void CNPC_HGrunt::OnRestore()
+{
+	gm_PlayerSquadEvaluateTimer.Force();
+
+	BaseClass::OnRestore();
+
+	if (!gEntList.FindEntityByClassname( NULL, COMMAND_POINT_CLASSNAME ))
+	{
+		CreateEntityByName( COMMAND_POINT_CLASSNAME );
+	}
+}
+
+bool CNPC_HGrunt::ShouldAlwaysThink()
+{
+	return (BaseClass::ShouldAlwaysThink() || IsInPlayerSquad());
 }
 
 // TODO: remove
@@ -403,6 +438,7 @@ int CNPC_HGrunt::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectSchedule()
 {
+	// todo: delete
 	return BaseClass::SelectSchedule();
 }
 
@@ -778,7 +814,7 @@ void CNPC_HGrunt::TaskFail( AI_TaskFailureCode_t code )
 		
 	}
 
-	// TODO: remove this
+	// TODO: outputs
 	//if (code == FAIL_NO_ROUTE_BLOCKED && m_bNotifyNavFailBlocked)
 	//{
 	//	m_OnNavFailBlocked.FireOutput( this, this );
@@ -864,6 +900,7 @@ void CNPC_HGrunt::PickupItem( CBaseEntity *pItem )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+// todo: delete
 bool CNPC_HGrunt::IgnorePlayerPushing( void )
 {
 	return false;
@@ -873,6 +910,7 @@ bool CNPC_HGrunt::IgnorePlayerPushing( void )
 // Purpose: Return a random expression for the specified state to play over 
 //			the state's expression loop.
 //-----------------------------------------------------------------------------
+// todo: delete
 const char *CNPC_HGrunt::SelectRandomExpressionForState( NPC_STATE state )
 {
 	// Hacky remap of NPC states to expression states that we care about
@@ -2199,6 +2237,14 @@ void CNPC_HGrunt::InputSetHealCharge( inputdata_t &inputdata )
 	{
 		Warning( "SetHealCharge input given to an HGrunt who isn't a medic!\n" );
 	}
+}
+
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+void CNPC_HGrunt::InputSetCommandable( inputdata_t &inputdata )
+{
+	RemoveSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
+	gm_PlayerSquadEvaluateTimer.Force();
 }
 
 // schedules
