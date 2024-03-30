@@ -91,7 +91,6 @@ public:
 	bool			FInViewCone( CBaseEntity *pEntity );
 
 	int				SelectFailSchedule( int failedSchedule, int failedTask, AI_TaskFailureCode_t taskFailCode );
-	int				SelectSchedule();
 
 	int 			SelectSchedulePriorityAction();
 	int 			SelectScheduleHeal();
@@ -116,12 +115,6 @@ public:
 
 	void 			SimpleUse( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
 
-	bool			IgnorePlayerPushing( void );
-
-	// todo: this
-	//int				DrawDebugTextOverlays( void );
-
-	virtual const char *SelectRandomExpressionForState( NPC_STATE state );
 	virtual void	OnChangeRunningBehavior( CAI_BehaviorBase *pOldBehavior, CAI_BehaviorBase *pNewBehavior );
 
 	//---------------------------------
@@ -183,13 +176,27 @@ public:
 	// Input/output functions
 	//---------------------------------
 	// todo: input/output funcs
-	void			InputSetHealCharge( inputdata_t &inputdata ); // todo: fix
+	void			InputSetHealCharge( inputdata_t &inputdata );
 	void			InputSetCommandable( inputdata_t &inputdata );
+	void			InputRemoveFromPlayerSquad( inputdata_t &inputdata ) { RemoveFromPlayerSquad(); }
+	void			InputSetRoleMedic( inputdata_t &inputdata );
+	void			InputSetRoleEngineer( inputdata_t &inputdata );
+	void			InputSetRoleGeneric( inputdata_t &inputdata );
+
+	COutputEvent		m_OnJoinedPlayerSquad;
+	COutputEvent		m_OnLeftPlayerSquad;
+	COutputEvent		m_OnFollowOrder;
+	COutputEvent		m_OnStationOrder;
+	COutputEvent		m_OnPlayerUse;
+	COutputEvent		m_OnNavFailBlocked;
+	COutputEvent		m_OnHealedEntity;
+
 private:
 	enum
 	{
 		COND_HGRUNT_MEDIC_HEAL_PLAYER = BaseClass::NEXT_CONDITION,
 		COND_HGRUNT_NEED_HEALING,
+		COND_HGRUNT_COMMANDHEAL,
 		NEXT_CONDITION,
 
 		SCHED_HGRUNT_MEDIC_HEAL = BaseClass::NEXT_SCHEDULE,
@@ -219,6 +226,8 @@ private:
 	float			m_flLastHealCallTime; // when we last called for a medic
 	float			m_flNextHealthSearchTime;
 	bool			m_bAwaitingMedic;
+	bool			m_bCommanded;
+	bool			m_bNotifyNavFailBlocked;
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;

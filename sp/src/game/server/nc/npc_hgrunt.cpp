@@ -51,7 +51,6 @@ ConVar sk_hgrunt_heal_call_cooldown( "sk_hgrunt_heal_call_cooldown", "20" ); // 
 #define DebuggingCommanderMode() (ai_citizen_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
 #define COMMAND_POINT_CLASSNAME "info_target_command_point"
 
-// todo: clean up autosquad function
 #define ShouldAutosquad() (HasSpawnFlags(SF_HGRUNT_JOIN_WHEN_NEARBY) && !m_bRemovedFromPlayerSquad && !HasSpawnFlags(SF_HGRUNT_NOT_COMMANDABLE))
 
 LINK_ENTITY_TO_CLASS( npc_hgrunt, CNPC_HGrunt );
@@ -59,8 +58,7 @@ LINK_ENTITY_TO_CLASS( npc_hgrunt, CNPC_HGrunt );
 BEGIN_DATADESC( CNPC_HGrunt )
 DEFINE_KEYFIELD(m_iSquadRole, FIELD_INTEGER, "squadrole"),
 DEFINE_KEYFIELD( m_bNeverLeavePlayerSquad, FIELD_BOOLEAN, "neverleaveplayersquad" ),
-
-DEFINE_INPUTFUNC(FIELD_VOID, "SetHealCharge", InputSetHealCharge),
+DEFINE_KEYFIELD( m_bNotifyNavFailBlocked, FIELD_BOOLEAN, "notifynavfailblocked" ),
 
 DEFINE_FIELD(m_flLastHealTime, FIELD_TIME),
 DEFINE_FIELD( m_flTimeLastCloseToPlayer, FIELD_TIME ),
@@ -74,8 +72,24 @@ DEFINE_FIELD(m_iFriendlyFireCount, FIELD_INTEGER),
 DEFINE_FIELD( m_bWasInPlayerSquad, FIELD_BOOLEAN ),
 DEFINE_FIELD(m_bRemovedFromPlayerSquad, FIELD_BOOLEAN),
 DEFINE_FIELD(m_bAwaitingMedic, FIELD_BOOLEAN),
+DEFINE_FIELD(m_bCommanded, FIELD_BOOLEAN),
 DEFINE_FIELD( m_vAutoSummonAnchor, FIELD_POSITION_VECTOR ),
 DEFINE_FIELD( m_iszOriginalSquad, FIELD_STRING ),
+
+DEFINE_INPUTFUNC( FIELD_VOID, "RemoveFromPlayerSquad", InputRemoveFromPlayerSquad ),
+DEFINE_INPUTFUNC( FIELD_VOID, "SetCommandable", InputSetCommandable ),
+DEFINE_INPUTFUNC( FIELD_VOID, "SetRoleMedic", InputSetRoleMedic ),
+DEFINE_INPUTFUNC( FIELD_VOID, "SetRoleEngineer", InputSetRoleEngineer ),
+DEFINE_INPUTFUNC( FIELD_VOID, "SetRoleGeneric", InputSetRoleGeneric ),
+DEFINE_INPUTFUNC( FIELD_INTEGER, "SetHealCharge", InputSetHealCharge ),
+
+DEFINE_OUTPUT( m_OnJoinedPlayerSquad, "OnJoinedPlayerSquad" ),
+DEFINE_OUTPUT( m_OnLeftPlayerSquad, "OnLeftPlayerSquad" ),
+DEFINE_OUTPUT( m_OnFollowOrder, "OnFollowOrder" ),
+DEFINE_OUTPUT( m_OnStationOrder, "OnStationOrder" ),
+DEFINE_OUTPUT( m_OnPlayerUse, "OnPlayerUse" ),
+DEFINE_OUTPUT( m_OnNavFailBlocked, "OnNavFailBlocked" ),
+DEFINE_OUTPUT(m_OnHealedEntity, "OnHealedEntity"),
 
 DEFINE_EMBEDDED( m_AutoSummonTimer ),
 END_DATADESC()
@@ -100,15 +114,29 @@ void CNPC_HGrunt::Spawn( void )
 		break;
 	}
 
+	SetHullType( HULL_HUMAN );
+	SetHullSizeNormal();
+
 	m_iMaxHealth = sk_hgrunt_health.GetFloat();
 	m_iHealth = sk_hgrunt_health.GetFloat();
+	m_iFriendlyFireCount = 0;
+
 	m_flLastHealTime = -1;
+	m_flTimeLastCloseToPlayer = -1;
+	m_flTimeJoinedPlayerSquad = -1;
+	m_flLastFriendlyFireTime = -1;
+	m_flLastHealCallTime = -1;
+	m_flNextHealthSearchTime = -1;
+
 	m_bWasInPlayerSquad = IsInPlayerSquad();
 	m_iszOriginalSquad = m_SquadName;
-	m_iFriendlyFireCount = 0;
+
 	m_bRemovedFromPlayerSquad = false;
+	m_bAwaitingMedic = false;
+	m_bCommanded = false;
+
 	m_hLastHealTarget = NULL;
-	m_flLastHealCallTime = -1;
+	
 
 	CapabilitiesAdd( bits_CAP_SQUAD | bits_CAP_FRIENDLY_DMG_IMMUNE | bits_CAP_NO_HIT_SQUADMATES );
 	NPCInit();
@@ -151,20 +179,15 @@ bool CNPC_HGrunt::ShouldAlwaysThink()
 	return (BaseClass::ShouldAlwaysThink() || IsInPlayerSquad());
 }
 
-// TODO: remove
-#define HGrunt_FOLLOWER_DESERT_FUNCTANK_DIST	45.0f*12.0f
+#define HGRUNT_FOLLOWER_DESERT_FUNCTANK_DIST	45.0f*12.0f
 bool CNPC_HGrunt::ShouldBehaviorSelectSchedule( CAI_BehaviorBase *pBehavior )
 {
-	if (pBehavior == &m_FollowBehavior)
-	{
-
-	}
-	else if (IsInPlayerSquad() )
+	if (IsInPlayerSquad() )
 	{
 		if (m_FollowBehavior.GetFollowTarget())
 		{
 			Vector vecFollowGoal = m_FollowBehavior.GetFollowTarget()->GetAbsOrigin();
-			if (vecFollowGoal.DistToSqr( GetAbsOrigin() ) > Square( HGrunt_FOLLOWER_DESERT_FUNCTANK_DIST ))
+			if (vecFollowGoal.DistToSqr( GetAbsOrigin() ) > Square( HGRUNT_FOLLOWER_DESERT_FUNCTANK_DIST ))
 			{
 				return false;
 			}
@@ -232,6 +255,15 @@ void CNPC_HGrunt::GatherConditions()
 		}
 #endif
 	}
+	if (m_bCommanded)
+	{
+		SetCondition( COND_HGRUNT_COMMANDHEAL );
+	}
+	else
+	{
+		ClearCondition( COND_HGRUNT_COMMANDHEAL );
+	}
+
 	if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
 		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() &&
 		/*GetHGruntSquad()->*/SquadHasSpecial( HGRUNT_MEDIC ))
@@ -353,8 +385,7 @@ void CNPC_HGrunt::BuildScheduleTestBits()
 			SetCustomInterruptCondition( COND_HGRUNT_MEDIC_HEAL_PLAYER );
 		}
 
-		// TODO: command heal is useful
-		//SetCustomInterruptCondition( COND_CIT_COMMANDHEAL );
+		SetCustomInterruptCondition( COND_HGRUNT_COMMANDHEAL );
 	}
 
 	if (!IsCurSchedule( SCHED_NEW_WEAPON ))
@@ -375,8 +406,7 @@ void CNPC_HGrunt::BuildScheduleTestBits()
 			SetCustomInterruptCondition( COND_HGRUNT_MEDIC_HEAL_PLAYER );
 		}
 
-		// TODO: command heal is useful
-		//SetCustomInterruptCondition( COND_CIT_COMMANDHEAL );
+		SetCustomInterruptCondition( COND_HGRUNT_COMMANDHEAL );
 	}
 #else
 	if (IsMedic() && m_AssaultBehavior.IsRunning() && !IsMoving())
@@ -436,14 +466,6 @@ int CNPC_HGrunt::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-int CNPC_HGrunt::SelectSchedule()
-{
-	// todo: delete
-	return BaseClass::SelectSchedule();
-}
-
-//-----------------------------------------------------------------------------
-//-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectSchedulePriorityAction()
 {
 	int schedule = SelectScheduleHeal();
@@ -468,8 +490,14 @@ int CNPC_HGrunt::SelectScheduleHeal()
 {
 	if (CanHeal())
 	{
+		if (HasCondition( COND_HGRUNT_COMMANDHEAL ))
+		{
+			SetTarget( AI_GetSinglePlayer() );
+			return SCHED_HGRUNT_MEDIC_HEAL;
+		}
+
 		CBaseEntity *pEntity = PlayerInRange( GetLocalOrigin(), HGRUNT_HEAL_RANGE );
-		if (pEntity && ShouldHealTarget( pEntity ))
+		if (pEntity && HasCondition(COND_HGRUNT_MEDIC_HEAL_PLAYER))
 		{
 			SetTarget( pEntity );
 			return SCHED_HGRUNT_MEDIC_HEAL;
@@ -589,27 +617,8 @@ bool CNPC_HGrunt::ShouldDeferToFollowBehavior()
 //-----------------------------------------------------------------------------
 int CNPC_HGrunt::TranslateSchedule( int scheduleType )
 {
-	CBasePlayer *pLocalPlayer = AI_GetSinglePlayer();
-
 	switch (scheduleType)
 	{
-	case SCHED_IDLE_STAND:
-	case SCHED_ALERT_STAND:
-		if (m_NPCState != NPC_STATE_COMBAT && pLocalPlayer && !pLocalPlayer->IsAlive() && CanJoinPlayerSquad())
-		{
-			// Player is dead! 
-			float flDist;
-			flDist = (pLocalPlayer->GetAbsOrigin() - GetAbsOrigin()).Length();
-
-			// TODO: remove this
-			//if (flDist < 50 * 12)
-			//{
-			//	AddSpawnFlags( SF_HGRUNT_NOT_COMMANDABLE );
-			//	return SCHED_HGrunt_MOURN_PLAYER;
-			//}
-		}
-		break;
-
 	case SCHED_ESTABLISH_LINE_OF_FIRE:
 	case SCHED_MOVE_TO_WEAPON_RANGE:
 		if (!IsMortar( GetEnemy() ) && HaveCommandGoal())
@@ -626,10 +635,6 @@ int CNPC_HGrunt::TranslateSchedule( int scheduleType )
 		{
 			return SCHED_STANDOFF;
 		}
-		break;
-
-	// TODO: get rid of this
-	case SCHED_RANGE_ATTACK1:
 		break;
 	}
 
@@ -672,22 +677,20 @@ void CNPC_HGrunt::StartTask( const Task_t *pTask )
 	switch (pTask->iTask)
 	{
 	case TASK_HGRUNT_MEDIC_HEAL:
-		if (IsMedic())
+		if (GetTarget() && GetTarget()->m_iMaxHealth == GetTarget()->m_iHealth)
 		{
-			if (GetTarget() && GetTarget()->m_iMaxHealth == GetTarget()->m_iHealth)
-			{
-				// Doesn't need us anymore
-				TaskComplete();
-				break;
-			}
-
-			Speak( TLK_HEAL );
+			// Doesn't need us anymore
+			TaskComplete();
+			m_bCommanded = false;
+			break;
 		}
+
+		Speak( TLK_HEAL );
 		// heal activity goes here
 		break;
 
 	case TASK_CALL_MEDIC:
-		// todo: add stuff here
+		// add code here
 		break;
 
 	case TASK_ITEM_PICKUP:
@@ -811,14 +814,13 @@ void CNPC_HGrunt::TaskFail( AI_TaskFailureCode_t code )
 			CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(GetTarget());
 			pHGrunt->m_bAwaitingMedic = false;
 		}
-		
+		m_bCommanded = false;
 	}
 
-	// TODO: outputs
-	//if (code == FAIL_NO_ROUTE_BLOCKED && m_bNotifyNavFailBlocked)
-	//{
-	//	m_OnNavFailBlocked.FireOutput( this, this );
-	//}
+	if (code == FAIL_NO_ROUTE_BLOCKED && m_bNotifyNavFailBlocked)
+	{
+		m_OnNavFailBlocked.FireOutput( this, this );
+	}
 
 	BaseClass::TaskFail( code );
 }
@@ -895,46 +897,6 @@ void CNPC_HGrunt::PickupItem( CBaseEntity *pItem )
 	{
 		DevMsg( "HGrunt doesn't know how to pick up %s!\n", pItem->GetClassname() );
 	}
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: 
-//-----------------------------------------------------------------------------
-// todo: delete
-bool CNPC_HGrunt::IgnorePlayerPushing( void )
-{
-	return false;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Return a random expression for the specified state to play over 
-//			the state's expression loop.
-//-----------------------------------------------------------------------------
-// todo: delete
-const char *CNPC_HGrunt::SelectRandomExpressionForState( NPC_STATE state )
-{
-	// Hacky remap of NPC states to expression states that we care about
-	int iExpressionState = 0;
-	switch (state)
-	{
-	case NPC_STATE_IDLE:
-		iExpressionState = 0;
-		break;
-
-	case NPC_STATE_ALERT:
-		iExpressionState = 1;
-		break;
-
-	case NPC_STATE_COMBAT:
-		iExpressionState = 2;
-		break;
-
-	default:
-		// An NPC state we don't have expressions for
-		return NULL;
-	}
-
-	return NULL;
 }
 
 //-----------------------------------------------------------------------------
@@ -1027,12 +989,15 @@ void CNPC_HGrunt::Heal()
 	{
 		CPASAttenuationFilter filter( GetTarget(), "HealthKit.Touch" );
 		EmitSound( filter, GetTarget()->entindex(), "HealthKit.Touch" );
+		m_bCommanded = false;
 	}
 	else
 	{
 		CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(GetTarget());
 		pHGrunt->m_bAwaitingMedic = false;
 	}
+
+	m_OnHealedEntity.FireOutput(GetTarget(), this);
 }
 
 bool CNPC_HGrunt::ShouldHealTarget( CBaseEntity *pTarget )
@@ -1110,7 +1075,10 @@ bool CNPC_HGrunt::IsCommandable()
 //-----------------------------------------------------------------------------
 bool CNPC_HGrunt::IsPlayerAlly( CBasePlayer *pPlayer )
 {
-	// todo: touch this up
+	if (IRelationType( pPlayer ) != D_LI)
+	{
+		return false;
+	}
 	return BaseClass::IsPlayerAlly( pPlayer );
 }
 
@@ -1297,6 +1265,16 @@ bool CNPC_HGrunt::ShouldAutoSummon()
 //-----------------------------------------------------------------------------
 bool CNPC_HGrunt::IsValidCommandTarget( CBaseEntity *pTarget )
 {
+	// If the player has targetted a medic, bypass all healing checks and just heal the player as soon as possible.
+	if (pTarget == this && IsMedic() && m_iHealCharge > 0)
+	{
+		CBasePlayer *pPlayer = AI_GetSinglePlayer();
+		if (pPlayer->GetHealth() < pPlayer->GetMaxHealth())
+		{
+			return true;
+		}
+	}
+		
 	return false;
 }
 
@@ -1332,8 +1310,7 @@ bool CNPC_HGrunt::TargetOrder( CBaseEntity *pTarget, CAI_BaseNPC **Allies, int n
 			m_FollowBehavior.SetParameters( AIF_SIMPLE );
 			SpeakCommandResponse( TLK_STARTFOLLOW );
 
-			// todo: outputs
-			//m_OnFollowOrder.FireOutput( this, this );
+			m_OnFollowOrder.FireOutput( this, this );
 		}
 		else if (m_FollowBehavior.GetFollowTarget() == pTarget)
 		{
@@ -1343,6 +1320,12 @@ bool CNPC_HGrunt::TargetOrder( CBaseEntity *pTarget, CAI_BaseNPC **Allies, int n
 		}
 	}
 
+	if (pTarget == this)
+	{
+		// What? You want *me* to heal you!?
+		m_bCommanded = true;
+		return false;
+	}
 	return true;
 }
 
@@ -1357,8 +1340,8 @@ void CNPC_HGrunt::MoveOrder( const Vector &vecDest, CAI_BaseNPC **Allies, int nu
 	CHL2_Player *pPlayer = (CHL2_Player *)UTIL_GetLocalPlayer();
 
 	// TODO: autosummon
-	/*m_AutoSummonTimer.Set( player_squad_autosummon_time.GetFloat() );
-	m_vAutoSummonAnchor = pPlayer->GetAbsOrigin();*/
+	m_AutoSummonTimer.Set( player_squad_autosummon_time.GetFloat() );
+	m_vAutoSummonAnchor = pPlayer->GetAbsOrigin();
 
 	if (m_StandoffBehavior.IsRunning())
 	{
@@ -1418,8 +1401,7 @@ void CNPC_HGrunt::MoveOrder( const Vector &vecDest, CAI_BaseNPC **Allies, int nu
 		SpeakCommandResponse( TLK_COMMANDED, modifiers );
 	}
 
-	// todo: outputs
-	//m_OnStationOrder.FireOutput( this, this );
+	m_OnStationOrder.FireOutput( this, this );
 
 	BaseClass::MoveOrder( vecDest, Allies, numAllies );
 }
@@ -1436,8 +1418,7 @@ void CNPC_HGrunt::OnMoveOrder()
 //-----------------------------------------------------------------------------
 void CNPC_HGrunt::CommanderUse( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value )
 {
-	// todo: outputs
-	//m_OnPlayerUse.FireOutput( pActivator, pCaller );
+	m_OnPlayerUse.FireOutput( pActivator, pCaller );
 
 	// Under these conditions, HGrunts will refuse to go with the player.
 	// Robin: NPCs should always respond to +USE even if someone else has the semaphore.
@@ -1565,16 +1546,6 @@ void CNPC_HGrunt::TogglePlayerSquadState()
 	if (!IsInPlayerSquad())
 	{
 		AddSquadToPlayerSquad();
-
-		// todo: speech
-		/*if (HaveCommandGoal())
-		{
-			SpeakCommandResponse( TLK_COMMANDED );
-		}
-		else if (m_FollowBehavior.GetFollowTarget() == UTIL_GetLocalPlayer())
-		{
-			SpeakCommandResponse( TLK_STARTFOLLOW );
-		}*/
 	}
 	else
 	{
@@ -1932,12 +1903,12 @@ void CNPC_HGrunt::SetSquad( CAI_Squad/*CAI_HGruntSquad*/ *pSquad )
 	if (IsInPlayerSquad() && !bWasInPlayerSquad)
 	{
 		// todo: outputs
-		//m_OnJoinedPlayerSquad.FireOutput( this, this );
+		m_OnJoinedPlayerSquad.FireOutput( this, this );
 	}
 	else if (!IsInPlayerSquad() && bWasInPlayerSquad)
 	{
 		// todo: outputs
-		//m_OnLeftPlayerSquad.FireOutput( this, this );
+		m_OnLeftPlayerSquad.FireOutput( this, this );
 	}
 }
 
@@ -1988,11 +1959,6 @@ int CNPC_HGrunt::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 			{
 				// otherwise, assume it was probably unintentional friendly fire.
 				m_iFriendlyFireCount++;
-			}
-			else
-			{
-				// we'll probably hit this at some point so i'd like to keep a case here
-				// todo: fix
 			}
 		}
 		
@@ -2232,11 +2198,39 @@ void CNPC_HGrunt::InputSetHealCharge( inputdata_t &inputdata )
 	if (IsMedic())
 	{
 		m_iHealCharge = clamp( inputdata.value.Int(), 0, sk_hgrunt_medic_max_heal_charge.GetInt() );
+		DevMsg( "%d %d\n", inputdata.value.Int(), m_iHealCharge );
 	}
 	else
 	{
 		Warning( "SetHealCharge input given to an HGrunt who isn't a medic!\n" );
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+// Input  : &inputdata - 
+//-----------------------------------------------------------------------------
+void CNPC_HGrunt::InputSetRoleMedic( inputdata_t &inputdata )
+{
+	m_iSquadRole = HGRUNT_MEDIC;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+// Input  : &inputdata - 
+//-----------------------------------------------------------------------------
+void CNPC_HGrunt::InputSetRoleEngineer( inputdata_t &inputdata )
+{
+	m_iSquadRole = HGRUNT_ENGINEER;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+// Input  : &inputdata - 
+//-----------------------------------------------------------------------------
+void CNPC_HGrunt::InputSetRoleGeneric( inputdata_t &inputdata )
+{
+	m_iSquadRole = HGRUNT_GENERIC;
 }
 
 //------------------------------------------------------------------------------
@@ -2254,6 +2248,7 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 
 	DECLARE_CONDITION(COND_HGRUNT_MEDIC_HEAL_PLAYER)
 	DECLARE_CONDITION(COND_HGRUNT_NEED_HEALING)
+	DECLARE_CONDITION(COND_HGRUNT_COMMANDHEAL)
 
 	DEFINE_SCHEDULE
 	(
