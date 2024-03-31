@@ -1,4 +1,4 @@
-//============== Copyleft arbabf, all rights not reserved.================
+//============= Copyleft arbabf, all rights not reserved. ================
 //
 // Purpose: Human grunts, who shoot bullets, heal things, and torch
 // doors.
@@ -78,6 +78,7 @@ public:
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
 	bool			IsHealRequestActive();
+	bool			ShouldCallMedic() { return HasCondition( COND_HGRUNT_NEED_HEALING ) && !IsMoving() && IsFollowingEntity(); }
 
 	//---------------------------------
 	// Behavior
@@ -91,6 +92,7 @@ public:
 	bool			FInViewCone( CBaseEntity *pEntity );
 
 	int				SelectFailSchedule( int failedSchedule, int failedTask, AI_TaskFailureCode_t taskFailCode );
+	int				SelectSchedule();
 
 	int 			SelectSchedulePriorityAction();
 	int 			SelectScheduleHeal();
@@ -126,7 +128,6 @@ public:
 	// Commander mode
 	//---------------------------------
 	bool 			IsCommandable();
-	bool			IsPlayerAlly( CBasePlayer *pPlayer = NULL );
 	bool			CanJoinPlayerSquad();
 	bool			WasInPlayerSquad();
 	bool			HaveCommandGoal() const;
@@ -175,7 +176,6 @@ public:
 	//---------------------------------
 	// Input/output functions
 	//---------------------------------
-	// todo: input/output funcs
 	void			InputSetHealCharge( inputdata_t &inputdata );
 	void			InputSetCommandable( inputdata_t &inputdata );
 	void			InputRemoveFromPlayerSquad( inputdata_t &inputdata ) { RemoveFromPlayerSquad(); }
@@ -225,8 +225,8 @@ private:
 	bool			m_bRemovedFromPlayerSquad; // if this npc was intentionally removed from the player squad (via +use)
 	float			m_flLastHealCallTime; // when we last called for a medic
 	float			m_flNextHealthSearchTime;
-	bool			m_bAwaitingMedic;
-	bool			m_bCommanded;
+	bool			m_bAwaitingMedic; // whether a medic has responded to our call
+	bool			m_bCommanded; // whether the player has explicitly asked us to do something
 	bool			m_bNotifyNavFailBlocked;
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;

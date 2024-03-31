@@ -18,15 +18,13 @@
 #include "ai_interactions.h"
 #include "ai_looktarget.h"
 
-#include "saverestore_utlvector.h"
+//#include "saverestore_utlvector.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 extern ConVar sk_healthkit;
 extern ConVar sk_healthvial;
-extern ConVar ai_citizen_debug_commander;
-// todo: autosummon
 extern ConVar player_squad_autosummon_debug;
 extern ConVar player_squad_autosummon_player_tolerance;
 extern ConVar player_squad_autosummon_time_after_combat;
@@ -37,18 +35,21 @@ const int MAX_PLAYER_SQUAD = 16;
 
 ConVar sk_hgrunt_health( "sk_hgrunt_health", "60" );
 ConVar sk_hgrunt_medic_heal_amount( "sk_hgrunt_medic_heal_amount", "40" ); // how much to heal the target for
-ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "3" ); // heal once every this seconds todo: change to 30
-ConVar sk_hgrunt_medic_same_heal_cooldown( "sk_hgrunt_medic_same_heal_cooldown", "6" ); // heal same target once every this seconds todo: change to 60
+ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "3" ); // heal once every this seconds todo: 30
+ConVar sk_hgrunt_medic_same_heal_cooldown( "sk_hgrunt_medic_same_heal_cooldown", "6" ); // heal same target once every this seconds todo: 60
 ConVar sk_hgrunt_medic_heal_threshold( "sk_hgrunt_medic_heal_threshold", "40" ); // heal if target is less than this hp
 ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); // how much healing the hgrunt medic can have stored
-ConVar sk_hgrunt_heal_call_timeout( "sk_hgrunt_heal_call_timeout", "10" ); // how long an hgrunt should wait before deciding to stop waiting for a medic todo: 15
-ConVar sk_hgrunt_heal_call_cooldown( "sk_hgrunt_heal_call_cooldown", "20" ); // how long before an hgrunt will call for a medic again todo: 60
+ConVar sk_hgrunt_heal_call_timeout( "sk_hgrunt_heal_call_timeout", "2" ); // how long an hgrunt should wait before deciding to stop waiting for a medic todo: 15
+ConVar sk_hgrunt_heal_call_cooldown( "sk_hgrunt_heal_call_cooldown", "4" ); // how long before an hgrunt will call for a medic again todo: 60
+
+ConVar	g_ai_hgrunt_show_enemy( "g_ai_hgrunt_show_enemy", "0" );
+ConVar	ai_hgrunt_debug_commander( "ai_hgrunt_debug_commander", "1" );
 
 #define HGRUNT_HEAL_RANGE 512.0f
 #define FRIENDLY_FIRE_TOLERANCE_LIMIT 3
 #define FRIENDLY_FIRE_TOLERANCE_TIME 5
 
-#define DebuggingCommanderMode() (ai_citizen_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
+#define DebuggingCommanderMode() (ai_hgrunt_debug_commander.GetBool() && (m_debugOverlays & OVERLAY_NPC_SELECTED_BIT))
 #define COMMAND_POINT_CLASSNAME "info_target_command_point"
 
 #define ShouldAutosquad() (HasSpawnFlags(SF_HGRUNT_JOIN_WHEN_NEARBY) && !m_bRemovedFromPlayerSquad && !HasSpawnFlags(SF_HGRUNT_NOT_COMMANDABLE))
@@ -182,6 +183,9 @@ bool CNPC_HGrunt::ShouldAlwaysThink()
 #define HGRUNT_FOLLOWER_DESERT_FUNCTANK_DIST	45.0f*12.0f
 bool CNPC_HGrunt::ShouldBehaviorSelectSchedule( CAI_BehaviorBase *pBehavior )
 {
+	if (ShouldCallMedic())
+		return false;
+
 	if (IsInPlayerSquad() )
 	{
 		if (m_FollowBehavior.GetFollowTarget())
@@ -348,11 +352,10 @@ void CNPC_HGrunt::PrescheduleThink()
 		NDebugOverlay::Line( Vector( GetAbsOrigin().x, mins.y, GetAbsOrigin().z + 1 ), Vector( GetAbsOrigin().x, maxs.y, GetAbsOrigin().z + 1 ), r, g, b, false, .11 );
 	}
 
-	// TODO: this might actually be useful
-	//if (GetEnemy() && g_ai_HGrunt_show_enemy.GetBool())
-	//{
-	//	NDebugOverlay::Line( EyePosition(), GetEnemy()->EyePosition(), 255, 0, 0, false, .1 );
-	//}
+	if (GetEnemy() && g_ai_hgrunt_show_enemy.GetBool())
+	{
+		NDebugOverlay::Line( EyePosition(), GetEnemy()->EyePosition(), 255, 0, 0, false, .1 );
+	}
 
 	if (DebuggingCommanderMode())
 	{
@@ -466,15 +469,27 @@ int CNPC_HGrunt::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+// todo: delete?
+int CNPC_HGrunt::SelectSchedule()
+{
+	return BaseClass::SelectSchedule();
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 int CNPC_HGrunt::SelectSchedulePriorityAction()
 {
 	int schedule = SelectScheduleHeal();
 	if (schedule != SCHED_NONE)
 		return schedule;
 
-	schedule = BaseClass::SelectSchedulePriorityAction();
-	if (schedule != SCHED_NONE)
-		return schedule;
+	if (!ShouldCallMedic())
+	{
+		schedule = BaseClass::SelectSchedulePriorityAction();
+		if (schedule != SCHED_NONE)
+			return schedule;
+	}
+	
 
 	schedule = SelectScheduleRetrieveItem();
 	if (schedule != SCHED_NONE)
@@ -606,7 +621,7 @@ bool CNPC_HGrunt::ShouldDeferToFollowBehavior()
 		return false;
 #endif
 	// try not to follow if we need healing
-	if (HasCondition( COND_HGRUNT_NEED_HEALING ))
+	if (ShouldCallMedic())
 	{
 		return false;
 	}
@@ -1073,17 +1088,6 @@ bool CNPC_HGrunt::IsCommandable()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-bool CNPC_HGrunt::IsPlayerAlly( CBasePlayer *pPlayer )
-{
-	if (IRelationType( pPlayer ) != D_LI)
-	{
-		return false;
-	}
-	return BaseClass::IsPlayerAlly( pPlayer );
-}
-
-//-----------------------------------------------------------------------------
-//-----------------------------------------------------------------------------
 bool CNPC_HGrunt::CanJoinPlayerSquad()
 {
 	if (!AI_IsSinglePlayer())
@@ -1322,7 +1326,7 @@ bool CNPC_HGrunt::TargetOrder( CBaseEntity *pTarget, CAI_BaseNPC **Allies, int n
 
 	if (pTarget == this)
 	{
-		// What? You want *me* to heal you!?
+		// Player's ordered us to do something.
 		m_bCommanded = true;
 		return false;
 	}
@@ -1339,7 +1343,6 @@ void CNPC_HGrunt::MoveOrder( const Vector &vecDest, CAI_BaseNPC **Allies, int nu
 
 	CHL2_Player *pPlayer = (CHL2_Player *)UTIL_GetLocalPlayer();
 
-	// TODO: autosummon
 	m_AutoSummonTimer.Set( player_squad_autosummon_time.GetFloat() );
 	m_vAutoSummonAnchor = pPlayer->GetAbsOrigin();
 
@@ -1433,7 +1436,6 @@ void CNPC_HGrunt::CommanderUse( CBaseEntity *pActivator, CBaseEntity *pCaller, U
 		// Don't say hi after you've been addressed by the player
 		SetSpokeConcept( TLK_HELLO, NULL );
 
-		// todo: this
 		if (!ShouldAutosquad())
 			TogglePlayerSquadState();
 		else if (!IsInPlayerSquad())
@@ -1902,12 +1904,10 @@ void CNPC_HGrunt::SetSquad( CAI_Squad/*CAI_HGruntSquad*/ *pSquad )
 
 	if (IsInPlayerSquad() && !bWasInPlayerSquad)
 	{
-		// todo: outputs
 		m_OnJoinedPlayerSquad.FireOutput( this, this );
 	}
 	else if (!IsInPlayerSquad() && bWasInPlayerSquad)
 	{
-		// todo: outputs
 		m_OnLeftPlayerSquad.FireOutput( this, this );
 	}
 }
