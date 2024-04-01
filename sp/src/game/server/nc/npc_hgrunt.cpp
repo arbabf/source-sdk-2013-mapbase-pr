@@ -270,7 +270,8 @@ void CNPC_HGrunt::GatherConditions()
 
 	if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
 		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() &&
-		/*GetHGruntSquad()->*/SquadHasSpecial( HGRUNT_MEDIC ))
+		/*GetHGruntSquad()->*/SquadHasSpecial( HGRUNT_MEDIC ) &&
+		!HasCondition(COND_RECEIVED_ORDERS))
 	{
 		SetCondition( COND_HGRUNT_NEED_HEALING );
 	}
@@ -324,7 +325,7 @@ void CNPC_HGrunt::PrescheduleThink()
 	}
 		
 
-	if (IsInPlayerSquad())
+	/*if (IsInPlayerSquad())
 	{
 		Vector mins = WorldAlignMins() * .5 + GetAbsOrigin();
 		Vector maxs = WorldAlignMaxs() * .5 + GetAbsOrigin();
@@ -350,7 +351,7 @@ void CNPC_HGrunt::PrescheduleThink()
 		// THIS IS A PLACEHOLDER UNTIL WE HAVE A REAL DESIGN & ART -- DO NOT REMOVE
 		NDebugOverlay::Line( Vector( mins.x, GetAbsOrigin().y, GetAbsOrigin().z + 1 ), Vector( maxs.x, GetAbsOrigin().y, GetAbsOrigin().z + 1 ), r, g, b, false, .11 );
 		NDebugOverlay::Line( Vector( GetAbsOrigin().x, mins.y, GetAbsOrigin().z + 1 ), Vector( GetAbsOrigin().x, maxs.y, GetAbsOrigin().z + 1 ), r, g, b, false, .11 );
-	}
+	}*/
 
 	if (GetEnemy() && g_ai_hgrunt_show_enemy.GetBool())
 	{
@@ -465,14 +466,6 @@ int CNPC_HGrunt::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 	}
 
 	return BaseClass::SelectFailSchedule( failedSchedule, failedTask, taskFailCode );
-}
-
-//-----------------------------------------------------------------------------
-//-----------------------------------------------------------------------------
-// todo: delete?
-int CNPC_HGrunt::SelectSchedule()
-{
-	return BaseClass::SelectSchedule();
 }
 
 //-----------------------------------------------------------------------------
@@ -830,6 +823,12 @@ void CNPC_HGrunt::TaskFail( AI_TaskFailureCode_t code )
 			pHGrunt->m_bAwaitingMedic = false;
 		}
 		m_bCommanded = false;
+	}
+
+	// if we can't find suitable cover, keep fighting right now and call for medic later
+	if (IsCurSchedule( SCHED_HGRUNT_COVER_HEAL ) && code == FAIL_NO_COVER)
+	{
+		m_flLastHealCallTime = gpGlobals->curtime + sk_hgrunt_heal_call_cooldown.GetFloat() * 0.25f;
 	}
 
 	if (code == FAIL_NO_ROUTE_BLOCKED && m_bNotifyNavFailBlocked)
@@ -2193,6 +2192,23 @@ bool CNPC_HGrunt::ShouldLookForHealthItem()
 	return true;
 }
 
+bool CNPC_HGrunt::ShouldCallMedic()
+{
+	// first we actually gotta be hurt
+	if (!HasCondition( COND_HGRUNT_NEED_HEALING ))
+		return false;
+
+	// then we need to be still, so as not to disturb any pre-existing follow schedules
+	if (IsMoving())
+		return false;
+
+	// flinching stops movement, so an hgrunt will immediately call medic if they flinch
+	if (HasMemory( bits_MEMORY_FLINCHED ))
+		return false;
+	
+	return true;
+}
+
 void CNPC_HGrunt::InputSetHealCharge( inputdata_t &inputdata )
 {
 	if (IsMedic())
@@ -2275,6 +2291,7 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	"		COND_LIGHT_DAMAGE"
 	"		COND_HEAR_DANGER"
 	"		COND_HEAR_MOVE_AWAY"
+	"		COND_RECEIVED_ORDERS"	
 	)
 	DEFINE_SCHEDULE
 	(
@@ -2289,8 +2306,8 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	"	"
 	"	Interrupts"
 	"		COND_LIGHT_DAMAGE"
-	"		COND_HEAR_DANGER"
 	"		COND_HEAR_MOVE_AWAY"
+	"		COND_RECEIVED_ORDERS"
 	)
 AI_END_CUSTOM_NPC()
 

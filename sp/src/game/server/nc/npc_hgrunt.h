@@ -78,7 +78,7 @@ public:
 	void			AddHealCharge( int charge );
 	void			RemoveHealCharge( int charge );
 	bool			IsHealRequestActive();
-	bool			ShouldCallMedic() { return HasCondition( COND_HGRUNT_NEED_HEALING ) && !IsMoving() && IsFollowingEntity(); }
+	bool			ShouldCallMedic();
 
 	//---------------------------------
 	// Behavior
@@ -92,7 +92,6 @@ public:
 	bool			FInViewCone( CBaseEntity *pEntity );
 
 	int				SelectFailSchedule( int failedSchedule, int failedTask, AI_TaskFailureCode_t taskFailCode );
-	int				SelectSchedule();
 
 	int 			SelectSchedulePriorityAction();
 	int 			SelectScheduleHeal();
