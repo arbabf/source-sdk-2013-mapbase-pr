@@ -6,7 +6,6 @@
 //========================================================================
 
 #include "npc_playercompanion.h"
-//#include "ai_squad.h"
 
 struct SquadCandidateHGrunt_t;
 
@@ -22,29 +21,6 @@ enum HGruntType_t
 //----------------------------
 #define SF_HGRUNT_JOIN_WHEN_NEARBY (1 << 16)
 #define SF_HGRUNT_NOT_COMMANDABLE (1 << 17)
-
-// todo: either redo CAI_HGruntSquad or remove all references to it
-
-/*
-class CNPC_HGrunt;
-
-class CAI_HGruntSquad : public CAI_Squad
-{
-	DECLARE_CLASS( CAI_HGruntSquad, CAI_Squad );
-	DECLARE_DATADESC();
-public:
-	~CAI_HGruntSquad();
-
-	bool	SquadHasMedic( void ) { return m_Medics.Count() > 0; }
-	bool	SquadHasEngineer( void ) { return m_Engineers.Count() > 0; }
-	void	AddSpecialGrunt( CNPC_HGrunt *pHGrunt );
-	void	RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt );
-
-	CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS> m_Medics;
-	CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS> m_Engineers;
-private:
-};
-*/
 
 class CNPC_HGrunt : public CNPC_PlayerCompanion
 {
@@ -151,12 +127,8 @@ public:
 	void 			UpdateFollowCommandPoint();
 	bool			IsFollowingCommandPoint();
 	CAI_BaseNPC *	GetSquadCommandRepresentative();
-	void			SetSquad( CAI_Squad/*CAI_HGruntSquad*/ *pSquad );
+	void			SetSquad( CAI_Squad *pSquad );
 	bool			SpeakCommandResponse( AIConcept_t concept, const char *modifiers = NULL );
-
-	//CAI_HGruntSquad *	GetHGruntSquad( void ) { return assert_cast<CAI_HGruntSquad *>(GetSquad()); }
-	//void				AddToSquad(string_t name);
-	//void				RemoveFromSquad();
 
 	//---------------------------------
 	// Combat

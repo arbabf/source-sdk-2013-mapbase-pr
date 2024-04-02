@@ -18,8 +18,6 @@
 #include "ai_interactions.h"
 #include "ai_looktarget.h"
 
-//#include "saverestore_utlvector.h"
-
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -324,8 +322,8 @@ void CNPC_HGrunt::PrescheduleThink()
 		m_flLastFriendlyFireTime = gpGlobals->curtime;
 	}
 		
-
-	/*if (IsInPlayerSquad())
+#ifdef 0
+	if (IsInPlayerSquad())
 	{
 		Vector mins = WorldAlignMins() * .5 + GetAbsOrigin();
 		Vector maxs = WorldAlignMaxs() * .5 + GetAbsOrigin();
@@ -351,7 +349,8 @@ void CNPC_HGrunt::PrescheduleThink()
 		// THIS IS A PLACEHOLDER UNTIL WE HAVE A REAL DESIGN & ART -- DO NOT REMOVE
 		NDebugOverlay::Line( Vector( mins.x, GetAbsOrigin().y, GetAbsOrigin().z + 1 ), Vector( maxs.x, GetAbsOrigin().y, GetAbsOrigin().z + 1 ), r, g, b, false, .11 );
 		NDebugOverlay::Line( Vector( GetAbsOrigin().x, mins.y, GetAbsOrigin().z + 1 ), Vector( GetAbsOrigin().x, maxs.y, GetAbsOrigin().z + 1 ), r, g, b, false, .11 );
-	}*/
+	}
+#endif
 
 	if (GetEnemy() && g_ai_hgrunt_show_enemy.GetBool())
 	{
@@ -1895,7 +1894,7 @@ CAI_BaseNPC *CNPC_HGrunt::GetSquadCommandRepresentative()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void CNPC_HGrunt::SetSquad( CAI_Squad/*CAI_HGruntSquad*/ *pSquad )
+void CNPC_HGrunt::SetSquad( CAI_Squad *pSquad )
 {
 	bool bWasInPlayerSquad = IsInPlayerSquad();
 
@@ -2077,31 +2076,6 @@ void CNPC_HGrunt::AddSquadToPlayerSquad()
 		return;
 	}
 }
-
-//void CNPC_HGrunt::AddToSquad( string_t name )
-//{
-//	BaseClass::AddToSquad(name);
-//	if (IsMedic() || IsEngineer())
-//	{
-//		CAI_HGruntSquad *squad = GetHGruntSquad();
-//		if (!&squad->m_Engineers || !&squad->m_Medics)
-//		{
-//			squad->m_Medics = *new CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS>;
-//			squad->m_Engineers = *new CUtlVectorFixed<CHandle<CNPC_HGrunt>, MAX_SQUAD_MEMBERS>;
-//		}
-//		squad->AddSpecialGrunt( this );
-//	}
-//}
-
-//void CNPC_HGrunt::RemoveFromSquad()
-//{
-//	BaseClass::RemoveFromSquad();
-//	if (IsMedic() || IsEngineer())
-//	{
-//		CAI_HGruntSquad *squad = GetHGruntSquad();
-//		squad->RemoveSpecialGrunt( this );
-//	}
-//}
 
 bool CNPC_HGrunt::IsHealRequestActive()
 {
@@ -2310,61 +2284,3 @@ AI_BEGIN_CUSTOM_NPC(npc_hgrunt, CNPC_HGrunt)
 	"		COND_RECEIVED_ORDERS"
 	)
 AI_END_CUSTOM_NPC()
-
-////--------------------------
-////    CAI_HGruntSquad
-////--------------------------
-//BEGIN_DATADESC(CAI_HGruntSquad)
-//	DEFINE_UTLVECTOR(m_Medics, FIELD_EHANDLE),
-//	DEFINE_UTLVECTOR( m_Engineers, FIELD_EHANDLE ),
-//END_DATADESC()
-//
-////CAI_HGruntSquad::CAI_HGruntSquad()
-////{
-////	
-////}
-////
-////CAI_HGruntSquad::~CAI_HGruntSquad()
-////{
-////
-////}
-//
-//void CAI_HGruntSquad::AddSpecialGrunt( CNPC_HGrunt *pHGrunt )
-//{
-//	if (!pHGrunt)
-//		return;
-//
-//	if (pHGrunt->IsMedic())
-//	{
-//		m_Medics.AddToTail( pHGrunt );
-//	}
-//	else if (pHGrunt->IsEngineer())
-//	{
-//		m_Engineers.AddToTail( pHGrunt );
-//	}
-//	else
-//	{
-//		Warning( "Tried to add special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName());
-//	}
-//}
-//
-//void CAI_HGruntSquad::RemoveSpecialGrunt( CNPC_HGrunt *pHGrunt )
-//{
-//	if (!pHGrunt)
-//		return;
-//
-//	if (pHGrunt->IsMedic())
-//	{
-//		m_Medics.FindAndRemove( pHGrunt );
-//		Warning( "Medic removed!" );
-//	}
-//	else if (pHGrunt->IsEngineer())
-//	{
-//		m_Engineers.FindAndRemove( pHGrunt );
-//		Warning( "Engineer removed!" );
-//	}
-//	else
-//	{
-//		Warning( "Tried to remove special hgrunt, but our grunt %s is not special!\n", pHGrunt->GetEntityName() );
-//	}
-//}
