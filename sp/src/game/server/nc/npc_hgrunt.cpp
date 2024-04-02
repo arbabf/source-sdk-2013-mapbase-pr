@@ -33,12 +33,12 @@ const int MAX_PLAYER_SQUAD = 16;
 
 ConVar sk_hgrunt_health( "sk_hgrunt_health", "60" );
 ConVar sk_hgrunt_medic_heal_amount( "sk_hgrunt_medic_heal_amount", "40" ); // how much to heal the target for
-ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "3" ); // heal once every this seconds todo: 30
-ConVar sk_hgrunt_medic_same_heal_cooldown( "sk_hgrunt_medic_same_heal_cooldown", "6" ); // heal same target once every this seconds todo: 60
+ConVar sk_hgrunt_medic_heal_cooldown( "sk_hgrunt_medic_heal_cooldown", "30" ); // heal once every this seconds
+ConVar sk_hgrunt_medic_same_heal_cooldown( "sk_hgrunt_medic_same_heal_cooldown", "60" ); // heal same target once every this seconds
 ConVar sk_hgrunt_medic_heal_threshold( "sk_hgrunt_medic_heal_threshold", "40" ); // heal if target is less than this hp
 ConVar sk_hgrunt_medic_max_heal_charge( "sk_hgrunt_medic_heal_charge", "200" ); // how much healing the hgrunt medic can have stored
-ConVar sk_hgrunt_heal_call_timeout( "sk_hgrunt_heal_call_timeout", "2" ); // how long an hgrunt should wait before deciding to stop waiting for a medic todo: 15
-ConVar sk_hgrunt_heal_call_cooldown( "sk_hgrunt_heal_call_cooldown", "4" ); // how long before an hgrunt will call for a medic again todo: 60
+ConVar sk_hgrunt_heal_call_timeout( "sk_hgrunt_heal_call_timeout", "15" ); // how long an hgrunt should wait before deciding to stop waiting for a medic
+ConVar sk_hgrunt_heal_call_cooldown( "sk_hgrunt_heal_call_cooldown", "60" ); // how long before an hgrunt will call for a medic again
 
 ConVar	g_ai_hgrunt_show_enemy( "g_ai_hgrunt_show_enemy", "0" );
 ConVar	ai_hgrunt_debug_commander( "ai_hgrunt_debug_commander", "1" );
@@ -268,7 +268,7 @@ void CNPC_HGrunt::GatherConditions()
 
 	if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
 		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() &&
-		/*GetHGruntSquad()->*/SquadHasSpecial( HGRUNT_MEDIC ) &&
+		SquadHasSpecial( HGRUNT_MEDIC ) &&
 		!HasCondition(COND_RECEIVED_ORDERS))
 	{
 		SetCondition( COND_HGRUNT_NEED_HEALING );
@@ -322,7 +322,7 @@ void CNPC_HGrunt::PrescheduleThink()
 		m_flLastFriendlyFireTime = gpGlobals->curtime;
 	}
 		
-#ifdef 0
+#if 0
 	if (IsInPlayerSquad())
 	{
 		Vector mins = WorldAlignMins() * .5 + GetAbsOrigin();
@@ -684,7 +684,7 @@ void CNPC_HGrunt::StartTask( const Task_t *pTask )
 	switch (pTask->iTask)
 	{
 	case TASK_HGRUNT_MEDIC_HEAL:
-		if (GetTarget() && GetTarget()->m_iMaxHealth == GetTarget()->m_iHealth)
+		if (GetTarget() && GetTarget()->GetMaxHealth() == GetTarget()->GetHealth())
 		{
 			// Doesn't need us anymore
 			TaskComplete();
@@ -697,6 +697,11 @@ void CNPC_HGrunt::StartTask( const Task_t *pTask )
 		break;
 
 	case TASK_CALL_MEDIC:
+		if (GetHealth() >= GetMaxHealth())
+		{
+			// don't need a medic anymore
+			TaskComplete();
+		}
 		// add code here
 		break;
 
@@ -796,6 +801,7 @@ void CNPC_HGrunt::RunTask( const Task_t *pTask )
 		}
 		else if (GetHealth() >= sk_hgrunt_medic_heal_threshold.GetFloat())
 		{
+			// todo: doesn't work if current hp + heal amount < heal threshold
 			TaskComplete();
 		}
 		break;
@@ -2188,7 +2194,6 @@ void CNPC_HGrunt::InputSetHealCharge( inputdata_t &inputdata )
 	if (IsMedic())
 	{
 		m_iHealCharge = clamp( inputdata.value.Int(), 0, sk_hgrunt_medic_max_heal_charge.GetInt() );
-		DevMsg( "%d %d\n", inputdata.value.Int(), m_iHealCharge );
 	}
 	else
 	{
