@@ -133,6 +133,7 @@ void CNPC_HGrunt::Spawn( void )
 	m_bRemovedFromPlayerSquad = false;
 	m_bAwaitingMedic = false;
 	m_bCommanded = false;
+	m_bHealed = false;
 
 	m_hLastHealTarget = NULL;
 	
@@ -268,8 +269,7 @@ void CNPC_HGrunt::GatherConditions()
 
 	if (GetHealth() <= sk_hgrunt_medic_heal_threshold.GetFloat() &&
 		gpGlobals->curtime >= m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat() &&
-		SquadHasSpecial( HGRUNT_MEDIC ) &&
-		!HasCondition(COND_RECEIVED_ORDERS))
+		SquadHasSpecial( HGRUNT_MEDIC ))
 	{
 		SetCondition( COND_HGRUNT_NEED_HEALING );
 	}
@@ -787,22 +787,31 @@ void CNPC_HGrunt::RunTask( const Task_t *pTask )
 		break;
 
 	case TASK_CALL_MEDIC:
+		if (GetHealth() >= GetMaxHealth())
+		{
+			// don't need a medic anymore
+			TaskComplete();
+			break;
+		}
+
 		if (gpGlobals->curtime > m_flLastHealCallTime + sk_hgrunt_heal_call_cooldown.GetFloat())
 		{
 			Warning( "MEDIC!\n" );
 			CSoundEnt::InsertSound( SOUND_MEDIC_CALL | SOUND_CONTEXT_ALLIES_ONLY, GetAbsOrigin(), 1500, sk_hgrunt_heal_call_timeout.GetFloat(), this, SOUNDENT_CHANNEL_HGRUNT_CALLS );
 			m_flLastHealCallTime = gpGlobals->curtime;
 		}
+		else if (m_bHealed)
+		{
+			Warning( "Thanks, doc!\n" );
+			TaskComplete();
+			m_bHealed = false;
+		}
 		else if (!IsHealRequestActive())
 		{
 			Warning( "Where's the medic?\n" );
 			TaskFail( FAIL_NO_GOAL );
 			ClearCondition( COND_HGRUNT_NEED_HEALING );
-		}
-		else if (GetHealth() >= sk_hgrunt_medic_heal_threshold.GetFloat())
-		{
-			// todo: doesn't work if current hp + heal amount < heal threshold
-			TaskComplete();
+			m_bAwaitingMedic = false;
 		}
 		break;
 
@@ -1014,6 +1023,7 @@ void CNPC_HGrunt::Heal()
 	{
 		CNPC_HGrunt *pHGrunt = dynamic_cast<CNPC_HGrunt *>(GetTarget());
 		pHGrunt->m_bAwaitingMedic = false;
+		pHGrunt->m_bHealed = true;
 	}
 
 	m_OnHealedEntity.FireOutput(GetTarget(), this);
@@ -2184,6 +2194,10 @@ bool CNPC_HGrunt::ShouldCallMedic()
 
 	// flinching stops movement, so an hgrunt will immediately call medic if they flinch
 	if (HasMemory( bits_MEMORY_FLINCHED ))
+		return false;
+
+	// if we have any orders, those supersede asking for heals
+	if (HasCondition( COND_RECEIVED_ORDERS ))
 		return false;
 	
 	return true;

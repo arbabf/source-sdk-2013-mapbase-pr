@@ -199,6 +199,7 @@ private:
 	bool			m_bAwaitingMedic; // whether a medic has responded to our call
 	bool			m_bCommanded; // whether the player has explicitly asked us to do something
 	bool			m_bNotifyNavFailBlocked;
+	bool			m_bHealed; // only used to notify an hgrunt if they got a heal; this is not saved
 
 	static CSimpleSimTimer gm_PlayerSquadEvaluateTimer;
 	DEFINE_CUSTOM_AI;
